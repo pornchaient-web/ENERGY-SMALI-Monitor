@@ -1,0 +1,6 @@
+{
+  "name": "ESP32 PZEM-004T Power Monitor",
+  "description": "ระบบตรวจสอบและวัดค่าพลังงานไฟฟ้าเรียลไทม์ผ่านบอร์ด ESP32 และเซนเซอร์ PZEM-004T เชื่อมต่อ Firebase Firestore",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

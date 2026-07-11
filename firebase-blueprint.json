@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "PowerReading": {
+      "title": "PowerReading",
+      "description": "Telemetry data from PZEM-004T sensor",
+      "type": "object",
+      "properties": {
+        "voltage": { "type": "number", "description": "AC voltage in Volts" },
+        "current": { "type": "number", "description": "AC current in Amps" },
+        "power": { "type": "number", "description": "Active power in Watts" },
+        "energy": { "type": "number", "description": "Cumulative energy in kWh" },
+        "frequency": { "type": "number", "description": "Grid frequency in Hz" },
+        "pf": { "type": "number", "description": "Power factor" },
+        "deviceId": { "type": "string", "description": "Unique hardware device identifier" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Measurement timestamp" }
+      },
+      "required": ["voltage", "current", "power", "energy", "frequency", "pf", "deviceId", "timestamp"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Global application configuration settings shared by all users/devices",
+      "type": "object",
+      "properties": {
+        "ftRate": { "type": "number", "description": "Ft rate in THB per unit" },
+        "serviceFeeMode": { "type": "string", "enum": ["auto", "custom"], "description": "Service fee mode (auto or custom)" },
+        "customServiceFee": { "type": "number", "description": "Custom service fee in THB" },
+        "vatPercent": { "type": "number", "description": "VAT percentage rate" },
+        "billingStartMeterMode": { "type": "string", "enum": ["auto", "custom"], "description": "Starting meter mode (auto or custom)" },
+        "billingStartMeter": { "type": "number", "description": "Custom starting meter value in kWh" },
+        "meterOffset": { "type": "number", "description": "Meter offset value in kWh" }
+      }
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "System alert and state change notification log",
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["online", "offline", "overpower", "overpower_normal"], "description": "Type of notification" },
+        "title": { "type": "string", "description": "Title of the notification" },
+        "message": { "type": "string", "description": "Notification message content" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the alert occurred" },
+        "read": { "type": "boolean", "description": "Whether the alert has been viewed" }
+      },
+      "required": ["type", "title", "message", "timestamp", "read"]
+    }
+  },
+  "firestore": {
+    "/power_readings/{readingId}": {
+      "schema": "PowerReading",
+      "description": "Real-time electrical telemetry data points"
+    },
+    "/settings/{settingsId}": {
+      "schema": "SystemSettings",
+      "description": "Global and system-wide setting configurations"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Persistent system and safety alert logs"
+    }
+  }
+}
