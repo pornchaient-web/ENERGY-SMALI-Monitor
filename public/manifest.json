@@ -1,0 +1,18 @@
+{
+  "short_name": "Energy Monitor",
+  "name": "ENERGY SMALI Power Monitor",
+  "description": "ESP32 PZEM-004T Real-time Electrical Energy Monitor & Analytics Dashboard",
+  "icons": [
+    {
+      "src": "icon-512.jpg",
+      "type": "image/jpeg",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "./",
+  "background_color": "#09090b",
+  "theme_color": "#10b981",
+  "display": "standalone",
+  "orientation": "portrait"
+}

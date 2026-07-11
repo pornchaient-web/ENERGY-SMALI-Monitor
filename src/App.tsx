@@ -43,6 +43,8 @@ import {
   VolumeX,
   ShieldAlert,
   CheckCircle,
+  Download,
+  Info,
 } from "lucide-react";
 
 import HardwareGuide from "./components/HardwareGuide";
@@ -138,6 +140,43 @@ export default function App() {
   const [tempIsOnlineOfflineAlertEnabled, setTempIsOnlineOfflineAlertEnabled] = useState<boolean>(isOnlineOfflineAlertEnabled);
 
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
+
+  // PWA States and Logic
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isPWAInstalled, setIsPWAInstalled] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt as any);
+
+    if (window.matchMedia("(display-mode: standalone)").matches || (window.navigator as any).standalone) {
+      setIsPWAInstalled(true);
+    }
+
+    const handleAppInstalled = () => {
+      setIsPWAInstalled(true);
+      setDeferredPrompt(null);
+    };
+
+    window.addEventListener("appinstalled", handleAppInstalled);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt as any);
+      window.removeEventListener("appinstalled", handleAppInstalled);
+    };
+  }, []);
+
+  const handleInstallClick = async () => {
+    if (!deferredPrompt) return;
+    deferredPrompt.prompt();
+    const { outcome } = await deferredPrompt.userChoice;
+    console.log(`PWA install prompt choice: ${outcome}`);
+    setDeferredPrompt(null);
+  };
 
   // Synchronize temp states with actual settings when they are loaded/updated from Firestore
   useEffect(() => {
@@ -2346,8 +2385,72 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Column: Physical hardware setup manual */}
-              <div className="lg:col-span-5">
+              {/* Right Column: Physical hardware setup manual & PWA Installer */}
+              <div className="lg:col-span-5 space-y-6">
+                {/* PWA Installation Assistant Card */}
+                <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
+                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
+                }`}>
+                  <div className="space-y-4">
+                    <h4 className={`font-semibold text-base flex items-center gap-1.5 ${
+                      isDarkMode ? "text-white" : "text-zinc-800"
+                    }`}>
+                      <Download className="w-5 h-5 text-emerald-500 fill-emerald-500/20 drop-shadow-[0_0_4px_rgba(16,185,129,0.25)]" />
+                      ติดตั้งแอปพลิเคชัน (PWA Installation)
+                    </h4>
+                    <p className={`text-xs leading-relaxed ${
+                      isDarkMode ? "text-zinc-400" : "text-zinc-600"
+                    }`}>
+                      คุณสามารถติดตั้งแอป ENERGY SMALI Monitor ลงบนหน้าจอหลักของโทรศัพท์มือถือ แท็บเล็ต หรือคอมพิวเตอร์ เพื่อให้การทำงานลื่นไหลเสมือนเป็นแอปตัวเครื่องโดยตรง และสามารถเรียกใช้งานได้แม้ออฟไลน์
+                    </p>
+                    
+                    {deferredPrompt ? (
+                      <div className="space-y-3">
+                        <div className={`p-3 rounded-2xl border text-xs flex items-center gap-2 font-mono ${
+                          isDarkMode ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-emerald-50 border-emerald-200 text-emerald-700"
+                        }`}>
+                          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                          พร้อมสำหรับการติดตั้งบนอุปกรณ์นี้แล้ว!
+                        </div>
+                        <button
+                          onClick={handleInstallClick}
+                          className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-black text-xs font-bold rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center gap-2 shadow-md active:scale-[0.98]"
+                        >
+                          <Download className="w-4 h-4" />
+                          ติดตั้งแอปพลิเคชันลงบนเครื่องนี้
+                        </button>
+                      </div>
+                    ) : isPWAInstalled ? (
+                      <div className={`p-4 rounded-2xl border text-xs flex items-center gap-3 font-mono ${
+                        isDarkMode ? "bg-zinc-800/40 border-zinc-800 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"
+                      }`}>
+                        <div className="p-2 bg-emerald-500/15 text-emerald-500 rounded-xl">
+                          <CheckCircle className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-bold text-emerald-500">ติดตั้งสำเร็จแล้ว!</div>
+                          <div className="text-[10px] mt-0.5">ระบบพร้อมทำงานในโหมดแอปพลิเคชันเดี่ยว (Standalone) แล้ว</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className={`p-4 rounded-2xl border text-xs space-y-2 font-mono ${
+                          isDarkMode ? "bg-zinc-800/20 border-zinc-800/60 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"
+                        }`}>
+                          <div className="font-bold flex items-center gap-1.5">
+                            <Info className="w-3.5 h-3.5 text-blue-400" />
+                            วิธีการติดตั้งด้วยตนเอง:
+                          </div>
+                          <ul className="list-disc list-inside space-y-1 text-[10px] pl-1 leading-relaxed">
+                            <li><strong>บน iOS (Safari):</strong> แแตะที่ปุ่ม <span className="underline">แชร์ (Share)</span> แล้วเลือก <strong>"เพิ่มไปยังหน้าจอโฮม (Add to Home Screen)"</strong></li>
+                            <li><strong>บน Android / PC (Chrome):</strong> กดเครื่องหมายจุดสามจุดบริเวณมุมขวา แล้วเลือก <strong>"ติดตั้งแอป (Install App)"</strong></li>
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <HardwareGuide />
               </div>
             </div>
