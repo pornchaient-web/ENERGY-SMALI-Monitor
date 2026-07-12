@@ -17,6 +17,11 @@ import { TrendingUp, Activity, Zap, Layers, Calendar, Info } from "lucide-react"
 interface ChartSectionProps {
   data: PowerReading[];
   isDarkMode?: boolean;
+  historyFilter: "all" | "today" | "yesterday" | "7days" | "1month" | "billing";
+  setHistoryFilter: (filter: "all" | "today" | "yesterday" | "7days" | "1month" | "billing") => void;
+  selectedBillingPeriodIndex: number;
+  setSelectedBillingPeriodIndex: (idx: number) => void;
+  getBillingPeriodsList: () => Array<{ label: string; start: Date; end: Date }>;
 }
 
 // Thai month names short
@@ -131,109 +136,101 @@ const aggregateData = (readingsList: PowerReading[], groupBy: "none" | "hour" | 
   return aggregated.sort((a, b) => a.key.localeCompare(b.key));
 };
 
-export default function ChartSection({ data, isDarkMode = true }: ChartSectionProps) {
+export default function ChartSection({
+  data,
+  isDarkMode = true,
+  historyFilter,
+  setHistoryFilter,
+  selectedBillingPeriodIndex,
+  setSelectedBillingPeriodIndex,
+  getBillingPeriodsList,
+}: ChartSectionProps) {
   const [metricTab, setMetricTab] = useState<"power" | "voltage_current" | "energy">("power");
-  const [timeframe, setTimeframe] = useState<"all" | "today" | "yesterday" | "7days" | "30days" | "billing">("all");
-  
-  // States for custom billing date picker
-  const [startDate, setStartDate] = useState<string>(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 30); // Default to last 30 days
-    return d.toISOString().split("T")[0];
-  });
-  const [endDate, setEndDate] = useState<string>(() => {
-    return new Date().toISOString().split("T")[0]; // Default to today
-  });
 
-  // Filter data based on selected timeframe
-  const filteredByTime = useMemo(() => {
-    return data.filter((d) => {
-      const rDate = getReadingDate(d);
-      
-      if (timeframe === "all") {
-        return true;
-      }
-      
-      if (timeframe === "today") {
-        const today = new Date();
-        return (
-          rDate.getDate() === today.getDate() &&
-          rDate.getMonth() === today.getMonth() &&
-          rDate.getFullYear() === today.getFullYear()
-        );
-      }
-      
-      if (timeframe === "yesterday") {
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        return (
-          rDate.getDate() === yesterday.getDate() &&
-          rDate.getMonth() === yesterday.getMonth() &&
-          rDate.getFullYear() === yesterday.getFullYear()
-        );
-      }
-      
-      if (timeframe === "7days") {
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        sevenDaysAgo.setHours(0, 0, 0, 0);
-        return rDate >= sevenDaysAgo;
-      }
-      
-      if (timeframe === "30days") {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        thirtyDaysAgo.setHours(0, 0, 0, 0);
-        return rDate >= thirtyDaysAgo;
-      }
-      
-      if (timeframe === "billing") {
-        if (!startDate) return true;
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        
-        const end = endDate ? new Date(endDate) : new Date();
-        end.setHours(23, 59, 59, 999);
-        
-        return rDate >= start && rDate <= end;
-      }
-      
-      return true;
-    });
-  }, [data, timeframe, startDate, endDate]);
+  // The telemetry data passed is already filtered in App.tsx according to selected timeframe, search query, and device filters!
+  const filteredByTime = data;
 
-  // Determine optimal aggregation interval
+  // Determine optimal aggregation interval based on the active history filter
   const optimalGroupBy = useMemo(() => {
-    if (timeframe === "all") {
+    if (historyFilter === "all") {
       return filteredByTime.length > 100 ? "hour" : "none";
     }
-    if (timeframe === "today") {
-      return "hour"; // Group today's data hourly
+    if (historyFilter === "today") {
+      return "none"; // Detailed view for today
     }
-    if (timeframe === "yesterday") {
-      return "hour"; // Group yesterday's data hourly
+    if (historyFilter === "yesterday") {
+      return "none"; // Detailed view for yesterday
     }
-    if (timeframe === "7days") {
-      return "day"; // Show daily bars/points
+    if (historyFilter === "7days") {
+      return "hour"; // Show hourly averages for last 7 days
     }
-    if (timeframe === "30days") {
-      return "day"; // Show daily averages
+    if (historyFilter === "1month") {
+      return "day"; // Show daily averages for last month
     }
-    if (timeframe === "billing") {
-      if (!startDate || !endDate) return "day";
-      const start = new Date(startDate);
-      const end = new Date(endDate);
-      const diffDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
-      if (diffDays <= 2) return "hour";
-      return "day";
+    if (historyFilter === "billing") {
+      if (filteredByTime.length > 300) return "day";
+      if (filteredByTime.length > 50) return "hour";
+      return "none";
     }
     return "none";
-  }, [timeframe, filteredByTime.length, startDate, endDate]);
+  }, [historyFilter, filteredByTime.length]);
 
   // Apply aggregation to format data for charts
   const formattedData = useMemo(() => {
     return aggregateData(filteredByTime, optimalGroupBy);
   }, [filteredByTime, optimalGroupBy]);
+
+  // Calculate Min, Max, and Avg for active metrics in the current timeframe
+  const stats = useMemo(() => {
+    if (formattedData.length === 0) return null;
+
+    if (metricTab === "power") {
+      const powers = formattedData.map(d => d.powerkW);
+      const min = Math.min(...powers);
+      const max = Math.max(...powers);
+      const avg = powers.reduce((sum, v) => sum + v, 0) / powers.length;
+      return {
+        dual: false,
+        min: min,
+        max: max,
+        avg: avg,
+        unit: "kW",
+        label: "กำลังไฟฟ้าเฉลี่ย",
+        colorClass: "text-emerald-500"
+      };
+    } else if (metricTab === "voltage_current") {
+      const voltages = formattedData.map(d => d.voltageV);
+      const currents = formattedData.map(d => d.currentA);
+      
+      const minV = Math.min(...voltages);
+      const maxV = Math.max(...voltages);
+      const avgV = voltages.reduce((sum, v) => sum + v, 0) / voltages.length;
+      
+      const minI = Math.min(...currents);
+      const maxI = Math.max(...currents);
+      const avgI = currents.reduce((sum, v) => sum + v, 0) / currents.length;
+      
+      return {
+        dual: true,
+        v: { min: minV, max: maxV, avg: avgV, unit: "V", label: "แรงดัน (Volt)", colorClass: "text-blue-500" },
+        i: { min: minI, max: maxI, avg: avgI, unit: "A", label: "กระแส (Amp)", colorClass: "text-amber-500" }
+      };
+    } else {
+      const energies = formattedData.map(d => d.energyKWh);
+      const min = Math.min(...energies);
+      const max = Math.max(...energies);
+      const avg = energies.reduce((sum, v) => sum + v, 0) / energies.length;
+      return {
+        dual: false,
+        min: min,
+        max: max,
+        avg: avg,
+        unit: "kWh",
+        label: "หน่วยสะสมรวม",
+        colorClass: "text-violet-500"
+      };
+    }
+  }, [formattedData, metricTab]);
 
   // Custom Tooltip component
   const CustomTooltip = ({ active, payload, label }: any) => {
@@ -328,9 +325,9 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
       }`} id="chart-filters-bar">
         <div className="flex flex-wrap gap-1">
           <button
-            onClick={() => setTimeframe("all")}
+            onClick={() => setHistoryFilter("all")}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              timeframe === "all"
+              historyFilter === "all"
                 ? isDarkMode
                   ? "bg-zinc-800 text-white border border-zinc-700/50 shadow-sm"
                   : "bg-white text-zinc-800 border border-zinc-200 shadow-sm"
@@ -342,9 +339,9 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
             ทั้งหมด
           </button>
           <button
-            onClick={() => setTimeframe("today")}
+            onClick={() => setHistoryFilter("today")}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              timeframe === "today"
+              historyFilter === "today"
                 ? isDarkMode
                   ? "bg-zinc-800 text-white border border-zinc-700/50 shadow-sm"
                   : "bg-white text-zinc-800 border border-zinc-200 shadow-sm"
@@ -356,9 +353,9 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
             วันนี้
           </button>
           <button
-            onClick={() => setTimeframe("yesterday")}
+            onClick={() => setHistoryFilter("yesterday")}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              timeframe === "yesterday"
+              historyFilter === "yesterday"
                 ? isDarkMode
                   ? "bg-zinc-800 text-white border border-zinc-700/50 shadow-sm"
                   : "bg-white text-zinc-800 border border-zinc-200 shadow-sm"
@@ -370,9 +367,9 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
             เมื่อวาน
           </button>
           <button
-            onClick={() => setTimeframe("7days")}
+            onClick={() => setHistoryFilter("7days")}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              timeframe === "7days"
+              historyFilter === "7days"
                 ? isDarkMode
                   ? "bg-zinc-800 text-white border border-zinc-700/50 shadow-sm"
                   : "bg-white text-zinc-800 border border-zinc-200 shadow-sm"
@@ -384,9 +381,9 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
             7 วันล่าสุด
           </button>
           <button
-            onClick={() => setTimeframe("30days")}
+            onClick={() => setHistoryFilter("1month")}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              timeframe === "30days"
+              historyFilter === "1month"
                 ? isDarkMode
                   ? "bg-zinc-800 text-white border border-zinc-700/50 shadow-sm"
                   : "bg-white text-zinc-800 border border-zinc-200 shadow-sm"
@@ -398,14 +395,18 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
             1 เดือนล่าสุด
           </button>
           <button
-            onClick={() => setTimeframe("billing")}
+            onClick={() => setHistoryFilter("billing")}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center gap-1.5 ${
-              timeframe === "billing"
-                ? "bg-emerald-500/15 text-emerald-500 border border-emerald-500/20 shadow-sm font-bold"
-                : "bg-emerald-50 text-emerald-700 border border-emerald-200 shadow-sm font-bold"
+              historyFilter === "billing"
+                ? isDarkMode
+                  ? "bg-zinc-800 text-emerald-400 border border-zinc-700/50 shadow-sm font-bold"
+                  : "bg-white text-emerald-600 border border-zinc-200 shadow-sm font-bold"
+                : isDarkMode
+                  ? "text-zinc-500 hover:text-zinc-300"
+                  : "text-zinc-400 hover:text-zinc-750"
             }`}
           >
-            <Calendar className="w-3.5 h-3.5" />
+            <Calendar className="w-3.5 h-3.5 text-emerald-500" />
             เลือกตามรอบบิล
           </button>
         </div>
@@ -420,32 +421,26 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
         </div>
       </div>
 
-      {/* Custom Billing Date Range Picker */}
-      {timeframe === "billing" && (
-        <div className={`grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-2xl border animate-in fade-in duration-200 ${
+      {/* Sync with Billing Cycle select from App.tsx */}
+      {historyFilter === "billing" && (
+        <div className={`p-4 rounded-2xl border animate-in fade-in duration-200 flex flex-col sm:flex-row sm:items-center gap-3 ${
           isDarkMode ? "bg-zinc-950/40 border-zinc-800/80" : "bg-zinc-100/60 border-zinc-200"
-        }`} id="billing-cycle-picker">
-          <div className="space-y-1">
-            <label className={`text-[10px] font-bold uppercase tracking-wider block font-mono ${isDarkMode ? "text-zinc-500" : "text-zinc-500"}`}>เริ่มต้นรอบบิล (Start Date):</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              className={`w-full text-xs font-semibold border rounded-xl px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono focus:border-transparent ${
-                isDarkMode ? "bg-black/60 text-zinc-200 border-zinc-800" : "bg-white text-zinc-800 border-zinc-200"
+        }`} id="custom-billing-picker">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs font-bold font-mono ${isDarkMode ? "text-zinc-400" : "text-zinc-500"}`}>เลือกรอบบิล (Select Billing Period):</span>
+            <select
+              value={selectedBillingPeriodIndex}
+              onChange={(e) => setSelectedBillingPeriodIndex(Number(e.target.value))}
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl border focus:outline-none transition-all ${
+                isDarkMode 
+                  ? "bg-black/60 border-zinc-800 text-zinc-300 focus:ring-zinc-700" 
+                  : "bg-white border-zinc-200 text-zinc-700 focus:ring-emerald-500 shadow-sm"
               }`}
-            />
-          </div>
-          <div className="space-y-1">
-            <label className={`text-[10px] font-bold uppercase tracking-wider block font-mono ${isDarkMode ? "text-zinc-500" : "text-zinc-500"}`}>สิ้นสุดรอบบิล (End Date):</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              className={`w-full text-xs font-semibold border rounded-xl px-3 py-2 focus:outline-none focus:ring-1 focus:ring-emerald-500 font-mono focus:border-transparent ${
-                isDarkMode ? "bg-black/60 text-zinc-200 border-zinc-800" : "bg-white text-zinc-800 border-zinc-200"
-              }`}
-            />
+            >
+              {getBillingPeriodsList().map((period, idx) => (
+                <option key={idx} value={idx}>{period.label}</option>
+              ))}
+            </select>
           </div>
         </div>
       )}
@@ -465,92 +460,154 @@ export default function ChartSection({ data, isDarkMode = true }: ChartSectionPr
         }`}>
           <Calendar className={`w-10 h-10 animate-bounce mb-3 ${isDarkMode ? "text-zinc-600" : "text-zinc-300"}`} />
           <p className={`text-sm font-semibold ${isDarkMode ? "text-zinc-400" : "text-zinc-500"}`}>ไม่พบข้อมูลในช่วงเวลาที่ระบุ</p>
-          <p className={`text-xs mt-1 ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>ลองเปลี่ยนช่วงเวลา filter หรือเปิดปุ่มทำงานบน Simulator บอร์ดจำลองเพื่อส่งข้อมูลเข้ามา</p>
+          <p className={`text-xs mt-1 ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>ลองเปลี่ยนช่วงเวลา filter เพื่อแสดงข้อมูลอื่น</p>
         </div>
       ) : (
-        <div className="h-[320px] w-full" id="chart-canvas-container">
-          <ResponsiveContainer width="100%" height="100%">
-            {metricTab === "power" ? (
-              <AreaChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorPower" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.2} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? "#27272a" : "#e4e4e7"} />
-                <XAxis dataKey="time" stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} />
-                <YAxis stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} unit="kW" />
-                <Tooltip content={<CustomTooltip />} />
-                <Area
-                  name="กำลังไฟฟ้าเฉลี่ย"
-                  type="monotone"
-                  dataKey="powerkW"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  fillOpacity={1}
-                  fill="url(#colorPower)"
-                  unit=" kW"
-                  isAnimationActive={false}
-                />
-              </AreaChart>
-            ) : metricTab === "voltage_current" ? (
-              <LineChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? "#27272a" : "#e4e4e7"} />
-                <XAxis dataKey="time" stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} />
-                <YAxis yAxisId="left" stroke="#3b82f6" fontSize={10} tickLine={false} unit="V" />
-                <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={10} tickLine={false} unit="A" />
-                <Tooltip content={<CustomTooltip />} />
-                <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: isDarkMode ? '#a1a1aa' : '#52525b', paddingTop: 10 }} />
-                <Line
-                  yAxisId="left"
-                  name="แรงดันไฟฟ้าเฉลี่ย (Voltage)"
-                  type="monotone"
-                  dataKey="voltageV"
-                  stroke="#3b82f6"
-                  strokeWidth={2}
-                  dot={false}
-                  unit=" V"
-                  isAnimationActive={false}
-                />
-                <Line
-                  yAxisId="right"
-                  name="กระแสไฟฟ้าเฉลี่ย (Current)"
-                  type="monotone"
-                  dataKey="currentA"
-                  stroke="#f59e0b"
-                  strokeWidth={2}
-                  dot={false}
-                  unit=" A"
-                  isAnimationActive={false}
-                />
-              </LineChart>
-            ) : (
-              <AreaChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorEnergy" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.2} />
-                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? "#27272a" : "#e4e4e7"} />
-                <XAxis dataKey="time" stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} />
-                <YAxis stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} unit="kWh" />
-                <Tooltip content={<CustomTooltip />} />
-                <Area
-                  name="พลังงานสะสมสูงสุด"
-                  type="monotone"
-                  dataKey="energyKWh"
-                  stroke="#8b5cf6"
-                  strokeWidth={2}
-                  fillOpacity={1}
-                  fill="url(#colorEnergy)"
-                  unit=" kWh"
-                  isAnimationActive={false}
-                />
-              </AreaChart>
-            )}
-          </ResponsiveContainer>
+        <div className="space-y-5">
+          {/* Quick Metrics Statistics Bar */}
+          {stats && (
+            <div className={`grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-2xl border transition-all duration-300 ${
+              isDarkMode ? "bg-black/20 border-zinc-800/80" : "bg-zinc-50 border-zinc-200"
+            }`}>
+              {!stats.dual ? (
+                <>
+                  <div className="text-left">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>ค่าต่ำสุด (Minimum)</span>
+                    <p className={`text-base font-extrabold font-mono mt-0.5 ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>
+                      {stats.min.toFixed(4)} <span className="text-xs text-zinc-500 font-sans">{stats.unit}</span>
+                    </p>
+                  </div>
+                  <div className={`text-left border-t sm:border-t-0 sm:border-l sm:pl-4 pt-2 sm:pt-0 ${isDarkMode ? "border-zinc-800/60" : "border-zinc-200"}`}>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>ค่าเฉลี่ย (Average)</span>
+                    <p className={`text-base font-extrabold font-mono mt-0.5 ${stats.colorClass}`}>
+                      {stats.avg.toFixed(4)} <span className="text-xs text-zinc-550 font-sans">{stats.unit}</span>
+                    </p>
+                  </div>
+                  <div className={`text-left border-t sm:border-t-0 sm:border-l sm:pl-4 pt-2 sm:pt-0 ${isDarkMode ? "border-zinc-800/60" : "border-zinc-200"}`}>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>ค่าสูงสุด (Maximum)</span>
+                    <p className={`text-base font-extrabold font-mono mt-0.5 ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>
+                      {stats.max.toFixed(4)} <span className="text-xs text-zinc-500 font-sans">{stats.unit}</span>
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="text-left sm:col-span-1">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>แรงดันไฟฟ้าเฉลี่ย (Avg Volt)</span>
+                    <p className="text-base font-extrabold font-mono text-blue-500 mt-0.5">
+                      {stats.v.avg.toFixed(1)} <span className="text-xs text-zinc-500 font-sans">V</span>
+                    </p>
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      (ต่ำสุด: {stats.v.min.toFixed(1)}V | สูงสุด: {stats.v.max.toFixed(1)}V)
+                    </span>
+                  </div>
+                  <div className={`text-left border-t sm:border-t-0 sm:border-l sm:pl-4 pt-2 sm:pt-0 sm:col-span-1 ${isDarkMode ? "border-zinc-800/60" : "border-zinc-200"}`}>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>กระแสไฟฟ้าเฉลี่ย (Avg Amp)</span>
+                    <p className="text-base font-extrabold font-mono text-amber-500 mt-0.5">
+                      {stats.i.avg.toFixed(3)} <span className="text-xs text-zinc-500 font-sans">A</span>
+                    </p>
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      (ต่ำสุด: {stats.i.min.toFixed(3)}A | สูงสุด: {stats.i.max.toFixed(3)}A)
+                    </span>
+                  </div>
+                  <div className={`text-left border-t sm:border-t-0 sm:border-l sm:pl-4 pt-2 sm:pt-0 sm:col-span-1 ${isDarkMode ? "border-zinc-800/60" : "border-zinc-200"}`}>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>แพ็กเก็ตตัวอย่าง (Sample Size)</span>
+                    <p className={`text-base font-extrabold font-mono mt-0.5 ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>
+                      {formattedData.length} <span className="text-xs text-zinc-500 font-sans">pts</span>
+                    </p>
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      (ช่วงเวลา: {optimalGroupBy === "none" ? "ข้อมูลดิบ" : optimalGroupBy === "hour" ? "รายชั่วโมง" : "รายวัน"})
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          <div className="h-[320px] w-full" id="chart-canvas-container">
+            <ResponsiveContainer width="100%" height="100%">
+              {metricTab === "power" ? (
+                <AreaChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorPower" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? "#27272a" : "#e4e4e7"} />
+                  <XAxis dataKey="time" stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} />
+                  <YAxis stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} unit="kW" />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Area
+                    name="กำลังไฟฟ้าเฉลี่ย"
+                    type="monotone"
+                    dataKey="powerkW"
+                    stroke="#10b981"
+                    strokeWidth={2}
+                    fillOpacity={1}
+                    fill="url(#colorPower)"
+                    unit=" kW"
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              ) : metricTab === "voltage_current" ? (
+                <LineChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? "#27272a" : "#e4e4e7"} />
+                  <XAxis dataKey="time" stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} />
+                  <YAxis yAxisId="left" stroke="#3b82f6" fontSize={10} tickLine={false} unit="V" />
+                  <YAxis yAxisId="right" orientation="right" stroke="#f59e0b" fontSize={10} tickLine={false} unit="A" />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: isDarkMode ? '#a1a1aa' : '#52525b', paddingTop: 10 }} />
+                  <Line
+                    yAxisId="left"
+                    name="แรงดันไฟฟ้าเฉลี่ย (Voltage)"
+                    type="monotone"
+                    dataKey="voltageV"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={false}
+                    unit=" V"
+                    isAnimationActive={false}
+                  />
+                  <Line
+                    yAxisId="right"
+                    name="กระแสไฟฟ้าเฉลี่ย (Current)"
+                    type="monotone"
+                    dataKey="currentA"
+                    stroke="#f59e0b"
+                    strokeWidth={2}
+                    dot={false}
+                    unit=" A"
+                    isAnimationActive={false}
+                  />
+                </LineChart>
+              ) : (
+                <AreaChart data={formattedData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorEnergy" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.2} />
+                      <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? "#27272a" : "#e4e4e7"} />
+                  <XAxis dataKey="time" stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} />
+                  <YAxis stroke={isDarkMode ? "#71717a" : "#a1a1aa"} fontSize={10} tickLine={false} unit="kWh" />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Area
+                    name="พลังงานสะสมสูงสุด"
+                    type="monotone"
+                    dataKey="energyKWh"
+                    stroke="#8b5cf6"
+                    strokeWidth={2}
+                    fillOpacity={1}
+                    fill="url(#colorEnergy)"
+                    unit=" kWh"
+                    isAnimationActive={false}
+                  />
+                </AreaChart>
+              )}
+            </ResponsiveContainer>
+          </div>
         </div>
       )}
     </div>

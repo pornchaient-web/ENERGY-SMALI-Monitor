@@ -10,6 +10,7 @@ import {
   writeBatch,
   doc,
   setDoc,
+  where,
 } from "firebase/firestore";
 import { PowerReading } from "./types";
 import { 
@@ -45,14 +46,23 @@ import {
   CheckCircle,
   Download,
   Info,
+  Layers,
+  FileSpreadsheet,
+  ChevronLeft,
+  ChevronRight,
+  Search,
+  Play,
+  Square,
+  Sliders,
 } from "lucide-react";
 
-import HardwareGuide from "./components/HardwareGuide";
 import ChartSection from "./components/ChartSection";
 
 export default function App() {
   const [readings, setReadings] = useState<PowerReading[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [historyReadings, setHistoryReadings] = useState<PowerReading[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     return localStorage.getItem("pzem_theme") !== "light"; // default to dark
   });
@@ -123,8 +133,17 @@ export default function App() {
 
   const [showStepBreakdown, setShowStepBreakdown] = useState(false);
   const [showTodayBreakdown, setShowTodayBreakdown] = useState(false);
-  const [historyFilter, setHistoryFilter] = useState<"today" | "yesterday" | "7days" | "1month" | "billing">("today");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "today" | "yesterday" | "7days" | "1month" | "billing">("today");
   const [selectedBillingPeriodIndex, setSelectedBillingPeriodIndex] = useState<number>(0);
+
+  // History Tab Pagination & Search State
+  const [historySearch, setHistorySearch] = useState<string>("");
+  const [historyPage, setHistoryPage] = useState<number>(1);
+  const historyItemsPerPage = 15;
+
+  useEffect(() => {
+    setHistoryPage(1);
+  }, [historyFilter, historySearch]);
 
   // Temporary editing states for billing & alert parameters to support confirmation before saving
   const [tempFtRate, setTempFtRate] = useState<number>(ftRate);
@@ -177,6 +196,8 @@ export default function App() {
     console.log(`PWA install prompt choice: ${outcome}`);
     setDeferredPrompt(null);
   };
+
+
 
   // Synchronize temp states with actual settings when they are loaded/updated from Firestore
   useEffect(() => {
@@ -296,8 +317,106 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Filter out simulated readings to only show real device data
-  const filteredReadings = readings.filter((r) => r.deviceId !== "esp32_pzem_sim");
+  // Subscribe to history readings in Firestore based on filter
+  useEffect(() => {
+    setIsHistoryLoading(true);
+    const now = new Date();
+    
+    // Today range (00:00:00 to 23:59:59.999)
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    
+    // Yesterday range
+    const yesterdayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
+    const yesterdayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+    
+    // Last 7 days
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    
+    // Last 1 month
+    const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
+
+    let q;
+
+    if (historyFilter === "today") {
+      q = query(
+        collection(db, "power_readings"),
+        where("timestamp", ">=", todayStart),
+        where("timestamp", "<=", todayEnd),
+        orderBy("timestamp", "desc")
+      );
+    } else if (historyFilter === "yesterday") {
+      q = query(
+        collection(db, "power_readings"),
+        where("timestamp", ">=", yesterdayStart),
+        where("timestamp", "<=", yesterdayEnd),
+        orderBy("timestamp", "desc")
+      );
+    } else if (historyFilter === "7days") {
+      q = query(
+        collection(db, "power_readings"),
+        where("timestamp", ">=", sevenDaysAgo),
+        orderBy("timestamp", "desc")
+      );
+    } else if (historyFilter === "1month") {
+      q = query(
+        collection(db, "power_readings"),
+        where("timestamp", ">=", oneMonthAgo),
+        orderBy("timestamp", "desc")
+      );
+    } else if (historyFilter === "billing") {
+      const periods = getBillingPeriodsList();
+      const selectedPeriod = periods[selectedBillingPeriodIndex];
+      if (selectedPeriod) {
+        q = query(
+          collection(db, "power_readings"),
+          where("timestamp", ">=", selectedPeriod.start),
+          where("timestamp", "<=", selectedPeriod.end),
+          orderBy("timestamp", "desc")
+        );
+      } else {
+        q = query(
+          collection(db, "power_readings"),
+          orderBy("timestamp", "desc"),
+          limit(1500)
+        );
+      }
+    } else {
+      // "all"
+      q = query(
+        collection(db, "power_readings"),
+        orderBy("timestamp", "desc"),
+        limit(2000)
+      );
+    }
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const data: PowerReading[] = [];
+        snapshot.forEach((doc) => {
+          const docData = doc.data() as Omit<PowerReading, "id">;
+          data.push({
+            id: doc.id,
+            ...docData,
+          });
+        });
+        setHistoryReadings(data);
+        setIsHistoryLoading(false);
+      },
+      (error) => {
+        console.error("Firestore history listening error:", error);
+        setIsHistoryLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [historyFilter, selectedBillingPeriodIndex]);
+
+  // Filter readings to only include real device data (removing simulated data)
+  const filteredReadings = React.useMemo(() => {
+    return readings.filter((r) => r.deviceId !== "esp32_pzem_sim");
+  }, [readings]);
 
   // Helper to dynamically construct billing cycles for selection
   const getBillingPeriodsList = () => {
@@ -338,9 +457,13 @@ export default function App() {
     // Last 1 month
     const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
 
-    return filteredReadings.filter((r) => {
+    const baseList = historyReadings.filter((r) => r.deviceId !== "esp32_pzem_sim");
+
+    return baseList.filter((r) => {
       const rDate = getReadingDate(r.timestamp);
-      if (historyFilter === "today") {
+      if (historyFilter === "all") {
+        return true;
+      } else if (historyFilter === "today") {
         return rDate >= todayStart && rDate <= todayEnd;
       } else if (historyFilter === "yesterday") {
         return rDate >= yesterdayStart && rDate <= yesterdayEnd;
@@ -360,6 +483,77 @@ export default function App() {
   };
 
   const historyFilteredReadings = getFilteredHistory();
+
+  // Apply Search Box filtering
+  const searchedHistoryReadings = React.useMemo(() => {
+    if (!historySearch.trim()) return historyFilteredReadings;
+    const query = historySearch.toLowerCase().trim();
+    return historyFilteredReadings.filter((r) => {
+      const dateStr = getReadingDate(r.timestamp).toLocaleString().toLowerCase();
+      const deviceIdStr = (r.deviceId || "real_pzem").toLowerCase();
+      const powerStr = r.power.toString();
+      const voltageStr = r.voltage.toString();
+      const currentStr = r.current.toString();
+      const energyStr = r.energy.toString();
+      const freqStr = (r.frequency || 50.0).toString();
+      const pfStr = (r.pf || 0.95).toString();
+
+      return (
+        dateStr.includes(query) ||
+        deviceIdStr.includes(query) ||
+        powerStr.includes(query) ||
+        voltageStr.includes(query) ||
+        currentStr.includes(query) ||
+        energyStr.includes(query) ||
+        freqStr.includes(query) ||
+        pfStr.includes(query)
+      );
+    });
+  }, [historyFilteredReadings, historySearch]);
+
+  // Pagination calculation
+  const totalHistoryPages = Math.max(1, Math.ceil(searchedHistoryReadings.length / historyItemsPerPage));
+  const paginatedHistoryReadings = React.useMemo(() => {
+    const startIndex = (historyPage - 1) * historyItemsPerPage;
+    return searchedHistoryReadings.slice(startIndex, startIndex + historyItemsPerPage);
+  }, [searchedHistoryReadings, historyPage]);
+
+  // CSV Export Handler with Excel UTF-8 BOM support
+  const handleExportCSV = () => {
+    if (searchedHistoryReadings.length === 0) {
+      alert("ไม่มีข้อมูลที่จะส่งออกในช่วงเวลาหรือคำค้นหานี้");
+      return;
+    }
+
+    const csvHeaders = ["Timestamp", "Device ID", "Power (W)", "Voltage (V)", "Current (A)", "Energy (kWh)", "Frequency (Hz)", "Power Factor (PF)"];
+    
+    const csvRows = searchedHistoryReadings.map(r => {
+      const dateStr = getReadingDate(r.timestamp).toLocaleString("th-TH").replace(/,/g, "");
+      return [
+        `"${dateStr}"`,
+        `"${r.deviceId || "real_pzem"}"`,
+        r.power,
+        r.voltage,
+        r.current,
+        r.energy,
+        r.frequency || 50.0,
+        r.pf || 0.95
+      ].join(",");
+    });
+
+    const csvContent = "\uFEFF" + [csvHeaders.join(","), ...csvRows].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    
+    const dateStamp = new Date().toISOString().slice(0, 10);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `telemetry_export_${historyFilter}_${dateStamp}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   const latestReading = filteredReadings[0] || null;
 
@@ -1528,7 +1722,15 @@ export default function App() {
 
             {/* Chart Section */}
             <div className="w-full">
-              <ChartSection data={filteredReadings} isDarkMode={isDarkMode} />
+              <ChartSection
+                data={searchedHistoryReadings}
+                isDarkMode={isDarkMode}
+                historyFilter={historyFilter}
+                setHistoryFilter={setHistoryFilter}
+                selectedBillingPeriodIndex={selectedBillingPeriodIndex}
+                setSelectedBillingPeriodIndex={setSelectedBillingPeriodIndex}
+                getBillingPeriodsList={getBillingPeriodsList}
+              />
             </div>
           </motion.div>
         )}
@@ -1545,6 +1747,16 @@ export default function App() {
             {/* History Date & Billing Filters */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-zinc-950/40 p-4 rounded-3xl border border-zinc-800/60 shadow-lg">
               <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={() => setHistoryFilter("all")}
+                  className={`px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                    historyFilter === "all"
+                      ? "bg-blue-500 text-black shadow-lg shadow-blue-500/10"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50"
+                  }`}
+                >
+                  ทั้งหมด
+                </button>
                 <button
                   onClick={() => setHistoryFilter("today")}
                   className={`px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer ${
@@ -1659,91 +1871,177 @@ export default function App() {
             </div>
 
             {/* Live Data Feed Logs Table */}
-            <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-xl" id="history-container">
-              <div className="flex items-center justify-between mb-6">
-                <div>
-                  <h3 className="font-semibold text-white text-base">บันทึกข้อมูลย้อนหลัง (Telemetry History Logs)</h3>
-                  <p className="text-xs text-zinc-500 mt-0.5">แสดงประวัติสัญญาณรับค่าไฟฟ้าตามตัวเลือกตัวกรองปัจจุบัน</p>
+            <div className={`border rounded-3xl p-6 transition-all duration-300 shadow-xl ${
+              isDarkMode ? "bg-zinc-900 border-zinc-800 shadow-xl" : "bg-white border-zinc-200 shadow-sm"
+            }`} id="history-container">
+              
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+                <div className="text-left">
+                  <h3 className={`font-semibold text-base ${isDarkMode ? "text-white" : "text-zinc-800"}`}>บันทึกข้อมูลย้อนหลัง (Telemetry History Logs)</h3>
+                  <p className={`text-xs mt-0.5 ${isDarkMode ? "text-zinc-500" : "text-zinc-500"}`}>แสดงประวัติสัญญาณรับค่าไฟฟ้าตามตัวเลือกตัวกรองและการค้นหาในปัจจุบัน</p>
                 </div>
-                <span className="text-xs font-mono font-bold px-3 py-1 bg-black/40 text-zinc-400 rounded-lg border border-zinc-800">
-                  {historyFilteredReadings.length} Packets
-                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`text-xs font-mono font-bold px-3 py-1.5 rounded-xl border shrink-0 ${
+                    isDarkMode ? "bg-black/40 text-zinc-400 border-zinc-800" : "bg-zinc-100 text-zinc-600 border-zinc-200"
+                  }`}>
+                    กรองแล้ว {searchedHistoryReadings.length} / {historyFilteredReadings.length}
+                  </span>
+                  
+                  <button
+                    onClick={handleExportCSV}
+                    className={`px-4 py-1.5 text-xs font-bold rounded-xl border flex items-center gap-1.5 transition-all cursor-pointer shrink-0 shadow-sm ${
+                      isDarkMode 
+                        ? "bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800 text-emerald-400" 
+                        : "bg-white border-zinc-200 hover:bg-zinc-50 text-emerald-600"
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-500" />
+                    ส่งออก CSV (.csv)
+                  </button>
+                </div>
               </div>
 
-              {isLoading ? (
-                <div className="py-24 flex justify-center items-center text-zinc-500 gap-2 font-mono">
+              {/* Search input bar */}
+              <div className="mb-6">
+                <div className="relative">
+                  <Search className="absolute left-3 top-3 h-4 w-4 text-zinc-500" />
+                  <input
+                    type="text"
+                    placeholder="พิมพ์เพื่อค้นหาข้อมูล (เวลา, วันที่, อุปกรณ์, กำลังไฟ W, โวลต์ V, กระแส A, พลังงานสะสม...)"
+                    value={historySearch}
+                    onChange={(e) => setHistorySearch(e.target.value)}
+                    className={`w-full pl-10 pr-4 py-2.5 text-xs rounded-xl border focus:outline-none focus:ring-2 transition-all text-left ${
+                      isDarkMode 
+                        ? "bg-black/40 border-zinc-800 text-zinc-200 placeholder-zinc-600 focus:ring-zinc-700 focus:border-zinc-700" 
+                        : "bg-white border-zinc-200 text-zinc-800 placeholder-zinc-400 focus:ring-emerald-500 focus:border-emerald-500 shadow-inner"
+                    }`}
+                  />
+                </div>
+              </div>
+
+              {isHistoryLoading ? (
+                <div className={`py-24 flex justify-center items-center gap-2 font-mono ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>
                   <RefreshCw className="w-5 h-5 animate-spin text-emerald-400" />
                   <span className="text-sm">LOG_STREAMING_ACTIVE...</span>
                 </div>
-              ) : historyFilteredReadings.length === 0 ? (
-                <div className="text-center py-24 text-zinc-500 border border-dashed border-zinc-800 rounded-3xl">
-                  <AlertTriangle className="w-12 h-12 mx-auto text-zinc-600 mb-3 animate-pulse" />
+              ) : searchedHistoryReadings.length === 0 ? (
+                <div className={`text-center py-24 border border-dashed rounded-3xl ${
+                  isDarkMode ? "border-zinc-800 text-zinc-500" : "border-zinc-200 text-zinc-400 bg-zinc-50/50"
+                }`}>
+                  <AlertTriangle className="w-12 h-12 mx-auto text-zinc-500 mb-3 animate-pulse" />
                   <p className="text-sm font-semibold">ไม่พบข้อมูลตามเงื่อนไขการค้นหา</p>
-                  <p className="text-xs text-zinc-600 mt-1">ไม่มีข้อมูลประวัติในช่วงเวลาที่เลือกในฐานข้อมูล Firebase Firestore</p>
+                  <p className="text-xs text-zinc-500 mt-1">ไม่มีข้อมูลประวัติในช่วงเวลาหรือคำค้นหาที่เลือกในฐานข้อมูล Firebase Firestore</p>
                 </div>
               ) : (
-                <div className="overflow-x-auto rounded-2xl border border-zinc-800/80">
-                  <table className="w-full text-xs text-left text-zinc-400 font-mono">
-                    <thead className="bg-black/60 text-zinc-500 font-bold uppercase text-[9px] tracking-wider border-b border-zinc-800">
-                      <tr>
-                        <th className="px-4 py-3.5">TIMESTAMP</th>
-                        <th className="px-4 py-3.5">DEVICE ID</th>
-                        <th className="px-3 py-3.5 text-right">POWER (kW)</th>
-                        <th className="px-3 py-3.5 text-right">VOLTAGE (V)</th>
-                        <th className="px-3 py-3.5 text-right">CURRENT (A)</th>
-                        <th className="px-3 py-3.5 text-right">ENERGY (KWH)</th>
-                        <th className="px-3 py-3.5 text-right">FREQ (HZ)</th>
-                        <th className="px-3 py-3.5 text-right">PF</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-800/60">
-                      {historyFilteredReadings.slice(0, 100).map((reading) => {
-                        let timeStr = "-";
-                        let dateStr = "-";
-                        if (reading.timestamp) {
-                          let dateObj: Date;
-                          if (typeof reading.timestamp.toDate === "function") {
-                            dateObj = reading.timestamp.toDate();
-                          } else if (reading.timestamp instanceof Date) {
-                            dateObj = reading.timestamp;
-                          } else if (reading.timestamp.seconds) {
-                            dateObj = new Date(reading.timestamp.seconds * 1000);
-                          } else {
-                            dateObj = new Date(reading.timestamp);
+                <>
+                  <div className={`overflow-x-auto rounded-2xl border ${isDarkMode ? "border-zinc-800" : "border-zinc-200 shadow-sm"}`}>
+                    <table className="w-full text-xs text-left font-mono">
+                      <thead className={`font-bold uppercase text-[9px] tracking-wider border-b ${
+                        isDarkMode ? "bg-black/40 text-zinc-550 border-zinc-800" : "bg-zinc-100 text-zinc-600 border-zinc-200"
+                      }`}>
+                        <tr>
+                          <th className="px-4 py-3.5">TIMESTAMP</th>
+                          <th className="px-4 py-3.5">DEVICE ID</th>
+                          <th className="px-3 py-3.5 text-right">POWER (kW)</th>
+                          <th className="px-3 py-3.5 text-right">VOLTAGE (V)</th>
+                          <th className="px-3 py-3.5 text-right">CURRENT (A)</th>
+                          <th className="px-3 py-3.5 text-right">ENERGY (KWH)</th>
+                          <th className="px-3 py-3.5 text-right">FREQ (HZ)</th>
+                          <th className="px-3 py-3.5 text-right">PF</th>
+                        </tr>
+                      </thead>
+                      <tbody className={`divide-y ${isDarkMode ? "divide-zinc-800/60" : "divide-zinc-150"}`}>
+                        {paginatedHistoryReadings.map((reading) => {
+                          let timeStr = "-";
+                          let dateStr = "-";
+                          if (reading.timestamp) {
+                            let dateObj: Date;
+                            if (typeof reading.timestamp.toDate === "function") {
+                              dateObj = reading.timestamp.toDate();
+                            } else if (reading.timestamp instanceof Date) {
+                              dateObj = reading.timestamp;
+                            } else if (reading.timestamp.seconds) {
+                              dateObj = new Date(reading.timestamp.seconds * 1000);
+                            } else {
+                              dateObj = new Date(reading.timestamp);
+                            }
+                            timeStr = dateObj.toLocaleTimeString("th-TH");
+                            dateStr = dateObj.toLocaleDateString("th-TH");
                           }
-                          timeStr = dateObj.toLocaleTimeString("th-TH");
-                          dateStr = dateObj.toLocaleDateString("th-TH");
-                        }
-                        
-                        return (
-                          <tr key={reading.id} className="hover:bg-zinc-800/30 transition-colors">
-                            <td className="px-4 py-3 text-zinc-300">
-                              <div>{timeStr}</div>
-                              <div className="text-[10px] text-zinc-600">{dateStr}</div>
-                            </td>
-                            <td className="px-4 py-3">
-                              <span className={`text-[10px] px-2 py-0.5 rounded border ${
-                                reading.deviceId === "esp32_pzem_sim" 
-                                  ? "bg-amber-500/5 text-amber-500/90 border-amber-500/10" 
-                                  : "bg-indigo-500/5 text-indigo-400 border-indigo-500/10"
-                              }`}>
-                                {reading.deviceId}
-                              </span>
-                            </td>
-                            <td className="px-3 py-3 text-right font-semibold text-emerald-400">
-                              {(reading.power / 1000).toFixed(4)}
-                            </td>
-                            <td className="px-3 py-3 text-right text-blue-400">{reading.voltage.toFixed(1)}</td>
-                            <td className="px-3 py-3 text-right text-amber-400">{reading.current.toFixed(3)}</td>
-                            <td className="px-3 py-3 text-right text-zinc-300">{reading.energy.toFixed(4)}</td>
-                            <td className="px-3 py-3 text-right text-violet-400">{reading.frequency.toFixed(1)}</td>
-                            <td className="px-3 py-3 text-right text-rose-400">{reading.pf.toFixed(2)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                          
+                          return (
+                            <tr key={reading.id} className={`transition-colors ${
+                              isDarkMode 
+                                ? "hover:bg-zinc-800/30 text-zinc-400" 
+                                : "hover:bg-zinc-50 text-zinc-700"
+                            }`}>
+                              <td className="px-4 py-3">
+                                <div className={`font-semibold ${isDarkMode ? "text-zinc-300" : "text-zinc-800"}`}>{timeStr}</div>
+                                <div className={`text-[10px] ${isDarkMode ? "text-zinc-600" : "text-zinc-400"}`}>{dateStr}</div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`text-[10px] px-2 py-0.5 rounded border font-semibold bg-indigo-500/5 text-indigo-500 border-indigo-500/10`}>
+                                  {reading.deviceId || "real_pzem"}
+                                </span>
+                              </td>
+                              <td className="px-3 py-3 text-right font-bold text-emerald-500">
+                                {(reading.power / 1000).toFixed(4)}
+                              </td>
+                              <td className="px-3 py-3 text-right text-blue-500 font-semibold">{reading.voltage.toFixed(1)}</td>
+                              <td className="px-3 py-3 text-right text-amber-500 font-semibold">{reading.current.toFixed(3)}</td>
+                              <td className={`px-3 py-3 text-right font-medium ${isDarkMode ? "text-zinc-300" : "text-zinc-600"}`}>{reading.energy.toFixed(4)}</td>
+                              <td className="px-3 py-3 text-right text-violet-500 font-semibold">{reading.frequency?.toFixed(1) || "50.0"}</td>
+                              <td className="px-3 py-3 text-right text-rose-500 font-semibold">{reading.pf?.toFixed(2) || "0.95"}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination Footer Controls */}
+                  <div className={`mt-5 pt-4 flex flex-col sm:flex-row justify-between items-center gap-4 border-t ${
+                    isDarkMode ? "border-zinc-800/80 text-zinc-400" : "border-zinc-150 text-zinc-600"
+                  }`}>
+                    <span className="text-xs font-medium">
+                      แสดงรายการที่ {(historyPage - 1) * historyItemsPerPage + 1} - {Math.min(searchedHistoryReadings.length, historyPage * historyItemsPerPage)} จากทั้งหมด {searchedHistoryReadings.length} รายการ
+                    </span>
+                    
+                    <div className="flex items-center gap-2 select-none">
+                      <button
+                        onClick={() => setHistoryPage(prev => Math.max(1, prev - 1))}
+                        disabled={historyPage === 1}
+                        className={`p-1.5 rounded-xl border transition-colors flex items-center justify-center cursor-pointer ${
+                          historyPage === 1
+                            ? "opacity-40 cursor-not-allowed"
+                            : isDarkMode
+                              ? "bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800 text-zinc-200"
+                              : "bg-white border-zinc-200 hover:bg-zinc-100 text-zinc-700 shadow-sm"
+                        }`}
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      
+                      <span className="text-xs font-bold font-mono">
+                        หน้า {historyPage} / {totalHistoryPages}
+                      </span>
+                      
+                      <button
+                        onClick={() => setHistoryPage(prev => Math.min(totalHistoryPages, prev + 1))}
+                        disabled={historyPage === totalHistoryPages}
+                        className={`p-1.5 rounded-xl border transition-colors flex items-center justify-center cursor-pointer ${
+                          historyPage === totalHistoryPages
+                            ? "opacity-40 cursor-not-allowed"
+                            : isDarkMode
+                              ? "bg-zinc-800/40 border-zinc-700/50 hover:bg-zinc-800 text-zinc-200"
+                              : "bg-white border-zinc-200 hover:bg-zinc-100 text-zinc-700 shadow-sm"
+                        }`}
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           </motion.div>
@@ -1759,9 +2057,9 @@ export default function App() {
             id="tab-settings-content"
           >
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Left Column: Cost tariff & Simulator */}
+              {/* Left Column: Cost tariff */}
               <div className="lg:col-span-7 space-y-6">
-                
+
                 {/* Meter Calibration Card */}
                 <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
                   isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
@@ -2385,7 +2683,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Right Column: Physical hardware setup manual & PWA Installer */}
+              {/* Right Column: PWA Installer */}
               <div className="lg:col-span-5 space-y-6">
                 {/* PWA Installation Assistant Card */}
                 <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
@@ -2450,8 +2748,6 @@ export default function App() {
                     )}
                   </div>
                 </div>
-
-                <HardwareGuide />
               </div>
             </div>
           </motion.div>
