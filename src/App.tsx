@@ -45,6 +45,7 @@ import {
   ShieldAlert,
   CheckCircle,
   Download,
+  Database,
   Info,
   Layers,
   FileSpreadsheet,
@@ -54,6 +55,7 @@ import {
   Play,
   Square,
   Sliders,
+  X,
 } from "lucide-react";
 
 import ChartSection from "./components/ChartSection";
@@ -95,6 +97,8 @@ export default function App() {
   const [meterOffset, setMeterOffset] = useState<number>(() => {
     return parseFloat(localStorage.getItem("pzem_meter_offset") || "0");
   });
+  const [todayFirstReading, setTodayFirstReading] = useState<PowerReading | null>(null);
+  const [billingFirstReading, setBillingFirstReading] = useState<PowerReading | null>(null);
 
   // Alert settings states
   const [overpowerThreshold, setOverpowerThreshold] = useState<number>(() => {
@@ -109,6 +113,34 @@ export default function App() {
   const [isOnlineOfflineAlertEnabled, setIsOnlineOfflineAlertEnabled] = useState<boolean>(() => {
     return localStorage.getItem("pzem_online_offline_enabled") !== "false";
   });
+  const [autoPruneDays, setAutoPruneDays] = useState<number>(() => {
+    return parseInt(localStorage.getItem("pzem_auto_prune_days") || "0");
+  });
+
+  // Native HTML5 Browser Push Notification State
+  const [browserNotificationPermission, setBrowserNotificationPermission] = useState<string>(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      return Notification.permission;
+    }
+    return "unsupported";
+  });
+
+  const requestNotificationPermission = async () => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      try {
+        const result = await Notification.requestPermission();
+        setBrowserNotificationPermission(result);
+        if (result === "granted") {
+          new Notification("เปิดระบบแจ้งเตือนสำเร็จ! 🎉", {
+            body: "คุณจะได้รับการแจ้งเตือนสถานะอุปกรณ์ PZEM-004T ทันทีแม้ในขณะที่ไม่ได้มองหน้าจอแอปนี้ค้างไว้",
+          });
+        }
+      } catch (e) {
+        console.error("Error requesting notification permission:", e);
+      }
+    }
+  };
+
 
   // Notification lists state (persisted in localStorage)
   const [notifications, setNotifications] = useState<Array<{
@@ -130,6 +162,7 @@ export default function App() {
   const [prevOnline, setPrevOnline] = useState<boolean | null>(null);
   const [isOverpowerActive, setIsOverpowerActive] = useState<boolean>(false);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
+  const [isOfflineBannerDismissed, setIsOfflineBannerDismissed] = useState<boolean>(true);
 
   const [showStepBreakdown, setShowStepBreakdown] = useState(false);
   const [showTodayBreakdown, setShowTodayBreakdown] = useState(false);
@@ -157,6 +190,7 @@ export default function App() {
   const [tempIsSoundEnabled, setTempIsSoundEnabled] = useState<boolean>(isSoundEnabled);
   const [tempIsOverpowerAlertEnabled, setTempIsOverpowerAlertEnabled] = useState<boolean>(isOverpowerAlertEnabled);
   const [tempIsOnlineOfflineAlertEnabled, setTempIsOnlineOfflineAlertEnabled] = useState<boolean>(isOnlineOfflineAlertEnabled);
+  const [tempAutoPruneDays, setTempAutoPruneDays] = useState<number>(autoPruneDays);
 
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
 
@@ -211,7 +245,8 @@ export default function App() {
     setTempIsSoundEnabled(isSoundEnabled);
     setTempIsOverpowerAlertEnabled(isOverpowerAlertEnabled);
     setTempIsOnlineOfflineAlertEnabled(isOnlineOfflineAlertEnabled);
-  }, [ftRate, serviceFeeMode, customServiceFee, vatPercent, billingStartMeterMode, billingStartMeter, overpowerThreshold, isSoundEnabled, isOverpowerAlertEnabled, isOnlineOfflineAlertEnabled]);
+    setTempAutoPruneDays(autoPruneDays);
+  }, [ftRate, serviceFeeMode, customServiceFee, vatPercent, billingStartMeterMode, billingStartMeter, overpowerThreshold, isSoundEnabled, isOverpowerAlertEnabled, isOnlineOfflineAlertEnabled, autoPruneDays]);
 
   const isSettingsChanged = 
     tempFtRate !== ftRate ||
@@ -223,7 +258,8 @@ export default function App() {
     tempOverpowerThreshold !== overpowerThreshold ||
     tempIsSoundEnabled !== isSoundEnabled ||
     tempIsOverpowerAlertEnabled !== isOverpowerAlertEnabled ||
-    tempIsOnlineOfflineAlertEnabled !== isOnlineOfflineAlertEnabled;
+    tempIsOnlineOfflineAlertEnabled !== isOnlineOfflineAlertEnabled ||
+    tempAutoPruneDays !== autoPruneDays;
 
   // Helper to update settings in Firestore so all devices stay synchronized
   const updateGlobalSetting = async (key: string, value: any) => {
@@ -261,6 +297,7 @@ export default function App() {
           if (data.isSoundEnabled !== undefined) setIsSoundEnabled(data.isSoundEnabled);
           if (data.isOverpowerAlertEnabled !== undefined) setIsOverpowerAlertEnabled(data.isOverpowerAlertEnabled);
           if (data.isOnlineOfflineAlertEnabled !== undefined) setIsOnlineOfflineAlertEnabled(data.isOnlineOfflineAlertEnabled);
+          if (data.autoPruneDays !== undefined) setAutoPruneDays(data.autoPruneDays);
         } else {
           // Initialize default values in Firestore if document doesn't exist
           setDoc(doc(db, "device_status", "global_settings"), {
@@ -274,7 +311,8 @@ export default function App() {
             overpowerThreshold: 2000,
             isSoundEnabled: true,
             isOverpowerAlertEnabled: true,
-            isOnlineOfflineAlertEnabled: true
+            isOnlineOfflineAlertEnabled: true,
+            autoPruneDays: 0
           }).catch(err => console.error("Error creating initial settings document:", err));
         }
       },
@@ -412,6 +450,74 @@ export default function App() {
 
     return () => unsubscribe();
   }, [historyFilter, selectedBillingPeriodIndex]);
+
+  // Subscribe to the first reading of today to calculate daily consumption accurately
+  useEffect(() => {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    
+    const q = query(
+      collection(db, "power_readings"),
+      where("timestamp", ">=", todayStart),
+      orderBy("timestamp", "asc"),
+      limit(50)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        let firstReal: PowerReading | null = null;
+        snapshot.forEach((doc) => {
+          const data = doc.data() as Omit<PowerReading, "id">;
+          if (data.deviceId !== "esp32_pzem_sim" && !firstReal) {
+            firstReal = {
+              id: doc.id,
+              ...data,
+            };
+          }
+        });
+        setTodayFirstReading(firstReal);
+      },
+      (error) => {
+        console.error("Error subscribing to today's first reading:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Subscribe to the first reading of the current billing cycle
+  useEffect(() => {
+    const period = getCurrentBillingPeriod();
+    const q = query(
+      collection(db, "power_readings"),
+      where("timestamp", ">=", period.start),
+      orderBy("timestamp", "asc"),
+      limit(50)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        let firstReal: PowerReading | null = null;
+        snapshot.forEach((doc) => {
+          const data = doc.data() as Omit<PowerReading, "id">;
+          if (data.deviceId !== "esp32_pzem_sim" && !firstReal) {
+            firstReal = {
+              id: doc.id,
+              ...data,
+            };
+          }
+        });
+        setBillingFirstReading(firstReal);
+      },
+      (error) => {
+        console.error("Error subscribing to billing cycle first reading:", error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [getCurrentBillingPeriod().start.getTime()]);
 
   // Filter readings to only include real device data (removing simulated data)
   const filteredReadings = React.useMemo(() => {
@@ -710,18 +816,40 @@ export default function App() {
         // Save to localStorage as fallback
         localStorage.setItem("pzem_notifications", JSON.stringify(data));
 
-        // Play sounds for newly added notifications only after the initial load
-        if (!isFirstLoad.current && soundEnabledRef.current) {
+        // Play sounds and trigger native browser notifications for newly added documents after the initial load
+        if (!isFirstLoad.current) {
           snapshot.docChanges().forEach((change) => {
             if (change.type === "added" && !change.doc.metadata.hasPendingWrites) {
               const notif = change.doc.data();
-              // Only play sound if it is very recent (e.g. within last 10 seconds)
+              // Only trigger if it is very recent (e.g. within the last 15 seconds)
               const ageMs = Date.now() - new Date(notif.timestamp).getTime();
-              if (ageMs < 10000) {
-                if (notif.type === "overpower") {
-                  playWarningBeep();
-                } else {
-                  playInfoChime();
+              if (ageMs < 15000) {
+                // 1. Play chime/beep if sound is enabled
+                if (soundEnabledRef.current) {
+                  if (notif.type === "overpower") {
+                    playWarningBeep();
+                  } else {
+                    playInfoChime();
+                  }
+                }
+
+                // 2. Trigger native OS/Browser background notification if granted
+                if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+                  try {
+                    let emoji = "🔔";
+                    if (notif.type === "online") emoji = "🟢";
+                    if (notif.type === "offline") emoji = "🔴";
+                    if (notif.type === "overpower") emoji = "⚠️";
+                    if (notif.type === "overpower_normal") emoji = "✅";
+
+                    new Notification(`${emoji} ${notif.title}`, {
+                      body: notif.message,
+                      requireInteraction: notif.type === "overpower", // High priority alerts stay on screen
+                      tag: `pzem_alert_${notif.type}` // Prevent clutter by replacement
+                    });
+                  } catch (e) {
+                    console.warn("Failed to trigger browser notification:", e);
+                  }
                 }
               }
             }
@@ -803,9 +931,24 @@ export default function App() {
   // 1. Monitor online/offline state changes
   useEffect(() => {
     if (isLoading) return;
+
+    // If there are no readings (e.g. database reset/cleared), don't trigger offline alerts
+    if (!latestReading) {
+      setPrevOnline(null);
+      setIsOfflineBannerDismissed(true);
+      return;
+    }
+
     if (prevOnline === null) {
       setPrevOnline(isOnline);
+      if (isOnline) {
+        setIsOfflineBannerDismissed(false);
+      }
       return;
+    }
+
+    if (isOnline) {
+      setIsOfflineBannerDismissed(false);
     }
 
     if (isOnlineOfflineAlertEnabled) {
@@ -824,7 +967,7 @@ export default function App() {
       }
     }
     setPrevOnline(isOnline);
-  }, [isOnline, isLoading, isOnlineOfflineAlertEnabled]);
+  }, [isOnline, isLoading, isOnlineOfflineAlertEnabled, latestReading]);
 
   // 2. Monitor overpower / normal state transitions
   const currentPowerW = latestReading ? latestReading.power : 0;
@@ -885,6 +1028,68 @@ export default function App() {
     }
   };
 
+  const [hasPrunedThisSession, setHasPrunedThisSession] = useState(false);
+
+  // Auto pruning function
+  const runAutoPruning = async (days: number) => {
+    if (days <= 0) return;
+    const thresholdDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    
+    try {
+      let hasMore = true;
+      let totalDeleted = 0;
+      let iterations = 0;
+      
+      while (hasMore && iterations < 5) {
+        iterations++;
+        const q = query(
+          collection(db, "power_readings"),
+          orderBy("timestamp", "asc"),
+          limit(100)
+        );
+        const snapshot = await getDocs(q);
+        
+        const docsToDelete = snapshot.docs.filter(doc => {
+          const data = doc.data();
+          if (!data.timestamp) return false;
+          const docDate = data.timestamp.toDate ? data.timestamp.toDate() : new Date(data.timestamp);
+          return docDate < thresholdDate;
+        });
+        
+        if (docsToDelete.length === 0) {
+          hasMore = false;
+          break;
+        }
+        
+        const batch = writeBatch(db);
+        docsToDelete.forEach((document) => {
+          batch.delete(doc(db, "power_readings", document.id));
+        });
+        
+        await batch.commit();
+        totalDeleted += docsToDelete.length;
+        
+        if (snapshot.docs.length < 100 || docsToDelete.length < snapshot.docs.length) {
+          hasMore = false;
+        }
+      }
+      
+      if (totalDeleted > 0) {
+        console.log(`Auto-pruned ${totalDeleted} old documents older than ${days} days.`);
+      }
+    } catch (error) {
+      console.error("Error during auto-pruning:", error);
+    }
+  };
+
+  // Run auto-pruning once when database finishes loading
+  useEffect(() => {
+    if (!isLoading && autoPruneDays > 0 && !hasPrunedThisSession) {
+      setHasPrunedThisSession(true);
+      runAutoPruning(autoPruneDays);
+    }
+  }, [isLoading, autoPruneDays, hasPrunedThisSession]);
+
   // Get localized time string of last reading
   const getLastUpdatedText = () => {
     if (!latestReading || !latestReading.timestamp) return "ไม่มีข้อมูลการเชื่อมต่อ";
@@ -914,9 +1119,17 @@ export default function App() {
 
   // Calculate actual energy consumed in the current billing cycle
   const currentMeterVal = latestReading ? (latestReading.energy + meterOffset) : 0;
-  const billingKWh = billingStartMeterMode === "custom"
+  let billingKWh = billingStartMeterMode === "custom"
     ? Math.max(0, currentMeterVal - billingStartMeter)
     : getKWhConsumedInPeriod(readingsInBillingCycle);
+
+  if (billingStartMeterMode === "auto" && latestReading && billingFirstReading) {
+    if (latestReading.energy >= billingFirstReading.energy) {
+      billingKWh = latestReading.energy - billingFirstReading.energy;
+    } else {
+      billingKWh = latestReading.energy; // handle PZEM reset
+    }
+  }
 
   // Progressive calculation of the current billing cycle cost
   const billingCostDetails = calculateProgressiveCost(
@@ -939,7 +1152,14 @@ export default function App() {
     ? Math.max(...todayReadings.map((r) => r.current || 0))
     : (latestReading ? latestReading.current : 0);
 
-  const todayKWh = getKWhConsumedInPeriod(todayReadings);
+  let todayKWh = getKWhConsumedInPeriod(todayReadings);
+  if (latestReading && todayFirstReading) {
+    if (latestReading.energy >= todayFirstReading.energy) {
+      todayKWh = latestReading.energy - todayFirstReading.energy;
+    } else {
+      todayKWh = latestReading.energy; // handle PZEM reset
+    }
+  }
 
   // Calculate today's cost without service fee (as it is a monthly fixed charge)
   const todayCostDetails = calculateProgressiveCost(
@@ -1149,7 +1369,7 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-6">
         
         {/* Real-time Status Alert Banners */}
-        {(!isOnline || isOverpowerActive) && (
+        {(isOverpowerActive || (!isOnline && isOnlineOfflineAlertEnabled && !isOfflineBannerDismissed)) && (
           <div className="space-y-3">
             {isOverpowerActive && (
               <motion.div
@@ -1174,7 +1394,7 @@ export default function App() {
               </motion.div>
             )}
             
-            {!isOnline && (
+            {!isOnline && isOnlineOfflineAlertEnabled && !isOfflineBannerDismissed && (
               <motion.div
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -1191,9 +1411,18 @@ export default function App() {
                     </p>
                   </div>
                 </div>
-                <span className="px-2.5 py-1 bg-amber-500/15 rounded-full text-[10px] font-black uppercase tracking-wider font-mono">
-                  OFFLINE
-                </span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-2.5 py-1 bg-amber-500/15 rounded-full text-[10px] font-black uppercase tracking-wider font-mono">
+                    OFFLINE
+                  </span>
+                  <button
+                    onClick={() => setIsOfflineBannerDismissed(true)}
+                    className="p-1.5 rounded-full hover:bg-amber-500/20 transition-colors cursor-pointer text-amber-600 dark:text-amber-400"
+                    title="ปิดข้อความแจ้งเตือนนี้"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </motion.div>
             )}
           </div>
@@ -2401,6 +2630,7 @@ export default function App() {
                                 setTempIsSoundEnabled(isSoundEnabled);
                                 setTempIsOverpowerAlertEnabled(isOverpowerAlertEnabled);
                                 setTempIsOnlineOfflineAlertEnabled(isOnlineOfflineAlertEnabled);
+                                setTempAutoPruneDays(autoPruneDays);
                               }}
                               className={`px-3 py-1.5 text-[11px] font-bold rounded-xl transition-all cursor-pointer ${
                                 isDarkMode ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-300" : "bg-zinc-100 hover:bg-zinc-200 text-zinc-700"
@@ -2556,6 +2786,64 @@ export default function App() {
                             <motion.div layout className="bg-white w-4 h-4 rounded-full shadow-md" />
                           </button>
                         </div>
+
+                        {/* Native Browser Push Notification Permission Status */}
+                        <div className={`flex flex-col gap-2.5 border-t pt-3 ${
+                          isDarkMode ? "border-zinc-800/30" : "border-zinc-200/40"
+                        }`}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex gap-2.5 items-start">
+                              <BellRing className={`w-4 h-4 mt-0.5 shrink-0 ${
+                                browserNotificationPermission === "granted" ? "text-indigo-500 animate-pulse" : "text-zinc-500"
+                              }`} />
+                              <div className="text-left">
+                                <p className="text-xs font-bold leading-none">แจ้งเตือนระบบภายนอกแอป (Background Push Notifications)</p>
+                                <p className={`text-[10px] mt-1 leading-normal ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>
+                                  ส่งการแจ้งเตือนทันทีบนหน้าจอมือถือหรือคอมพิวเตอร์ของคุณ แม้จะย่อหน้าจอหรือไม่ได้เปิดแอปนี้ดูอยู่ก็ตาม
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="shrink-0 pl-2">
+                              {browserNotificationPermission === "granted" ? (
+                                <span className={`px-2 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider block ${
+                                  isDarkMode ? "bg-indigo-500/10 text-indigo-400 border border-indigo-500/20" : "bg-indigo-50 text-indigo-700 border border-indigo-200"
+                                }`}>
+                                  เปิดแล้ว
+                                </span>
+                              ) : browserNotificationPermission === "denied" ? (
+                                <span className={`px-2 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider block ${
+                                  isDarkMode ? "bg-rose-500/10 text-rose-400 border border-rose-500/20" : "bg-rose-50 text-rose-700 border border-rose-200"
+                                }`}>
+                                  ถูกปิดกั้น
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={requestNotificationPermission}
+                                  className="px-2.5 py-1 text-[10px] font-bold bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-all duration-300 shadow-md shadow-indigo-500/10 cursor-pointer shrink-0"
+                                >
+                                  เปิดใช้งาน
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {browserNotificationPermission === "denied" && (
+                            <div className={`p-2.5 rounded-xl text-[10px] leading-relaxed text-left border ${
+                              isDarkMode ? "bg-rose-950/20 border-rose-900/30 text-rose-400" : "bg-rose-550/10 border-rose-100 text-rose-700"
+                            }`}>
+                              ⚠️ <strong>สิทธิ์การแจ้งเตือนถูกบล็อก:</strong> กรุณาคลิกสัญลักษณ์รูปกุญแจในแถบ URL แล้วตั้งค่า "การแจ้งเตือน" ให้เป็น "อนุญาต" เพื่อเปิดรับแจ้งเตือนเมื่ออยู่ในหน้าจอหลักหรือใช้งานแอปอื่นอยู่
+                            </div>
+                          )}
+
+                          {browserNotificationPermission === "granted" && (
+                            <div className={`p-2.5 rounded-xl text-[10px] leading-relaxed text-left border ${
+                              isDarkMode ? "bg-emerald-950/20 border-emerald-900/30 text-emerald-400" : "bg-emerald-550/10 border-emerald-100 text-emerald-750"
+                            }`}>
+                              💡 <strong>คำแนะนำ:</strong> เพื่อให้การเตือนไฟเกินพิกัดและสถานะออฟไลน์ส่งเสียงและแจ้งเตือนคุณแบบเรียลไทม์ได้ตลอดเวลา โปรดเปิดแท็บแอปนี้ทิ้งไว้ในเบื้องหลัง
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       {/* Confirmation & Save Banner inside Card */}
@@ -2583,6 +2871,7 @@ export default function App() {
                                 setTempIsSoundEnabled(isSoundEnabled);
                                 setTempIsOverpowerAlertEnabled(isOverpowerAlertEnabled);
                                 setTempIsOnlineOfflineAlertEnabled(isOnlineOfflineAlertEnabled);
+                                setTempAutoPruneDays(autoPruneDays);
                               }}
                               className={`px-3 py-1.5 text-[11px] font-bold rounded-xl transition-all cursor-pointer ${
                                 isDarkMode ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-300" : "bg-zinc-100 hover:bg-zinc-200 text-zinc-700"
@@ -2748,6 +3037,122 @@ export default function App() {
                     )}
                   </div>
                 </div>
+
+                {/* Database & Storage Management Card */}
+                <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
+                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
+                }`}>
+                  <div className="space-y-4">
+                    <h4 className={`font-semibold text-base flex items-center gap-1.5 ${
+                      isDarkMode ? "text-white" : "text-zinc-800"
+                    }`}>
+                      <Database className="w-5 h-5 text-indigo-500 fill-indigo-500/20 drop-shadow-[0_0_4px_rgba(99,102,241,0.25)]" />
+                      จัดการข้อมูลและพื้นที่จัดเก็บ (Database Storage)
+                    </h4>
+                    <p className={`text-xs leading-relaxed ${
+                      isDarkMode ? "text-zinc-400" : "text-zinc-600"
+                    }`}>
+                      ข้อมูลปริมาณมากจาก PZEM-004T และ ESP32 อาจส่งผลต่อการใช้โควต้าในระบบคลาวด์ Firestore คุณสามารถเปิดใช้ระบบแยกและลบข้อมูลเก่าออกอัตโนมัติ หรือทำการล้างประวัติด้วยตนเองได้ที่นี่
+                    </p>
+
+                    <div className="space-y-3 pt-2">
+                      <label className={`text-xs font-bold block font-mono ${
+                        isDarkMode ? "text-zinc-300" : "text-zinc-700"
+                      }`}>
+                        ระบบลบประวัติเก่าอัตโนมัติ (Auto-Prune Old Data):
+                      </label>
+                      <select
+                        value={tempAutoPruneDays}
+                        onChange={(e) => {
+                          setTempAutoPruneDays(parseInt(e.target.value));
+                        }}
+                        className={`w-full px-3 py-2.5 rounded-xl border text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-colors duration-300 ${
+                          isDarkMode ? "bg-black/50 border-zinc-800 text-white" : "bg-zinc-50 border-zinc-200 text-zinc-800"
+                        }`}
+                      >
+                        <option value="0">ปิดการทำงาน (เก็บข้อมูลไว้ทั้งหมด)</option>
+                        <option value="3">เก็บเฉพาะข้อมูล 3 วันล่าสุด (แนะนำเพื่อความเร็วสูงสุด)</option>
+                        <option value="7">เก็บเฉพาะข้อมูล 7 วันล่าสุด</option>
+                        <option value="15">เก็บเฉพาะข้อมูล 15 วันล่าสุด</option>
+                        <option value="30">เก็บเฉพาะข้อมูล 30 วันล่าสุด</option>
+                        <option value="90">เก็บเฉพาะข้อมูล 90 วันล่าสุด</option>
+                      </select>
+                      <p className={`text-[10px] leading-normal ${
+                        isDarkMode ? "text-zinc-500" : "text-zinc-400"
+                      }`}>
+                        * เมื่อเปิดใช้ ระบบจะตรวจเช็กและทำการลบข้อมูลที่เก่ากว่ากำหนดโดยอัตโนมัติในเบื้องหลังเมื่อเปิดแอปพลิเคชัน
+                      </p>
+
+                      {/* Database Settings Save Banner */}
+                      {isSettingsChanged && (
+                        <div className={`border p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-3 animate-in fade-in duration-200 ${
+                          isDarkMode ? "bg-amber-500/10 border-amber-500/20" : "bg-amber-50/50 border-amber-200"
+                        }`}>
+                          <div className="flex items-start gap-2.5">
+                            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                            <div>
+                              <p className={`text-xs font-bold text-left ${isDarkMode ? "text-amber-400" : "text-amber-700"}`}>ตรวจพบการเปลี่ยนแปลงค่าระบบ</p>
+                              <p className={`text-[10px] mt-0.5 leading-relaxed text-left font-sans ${isDarkMode ? "text-zinc-400" : "text-zinc-650"}`}>กรุณากดยืนยันเพื่อบันทึกและซิงค์การตั้งค่านี้ให้ตรงกันทุกอุปกรณ์</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
+                            <button
+                              onClick={() => {
+                                setTempFtRate(ftRate);
+                                setTempServiceFeeMode(serviceFeeMode);
+                                setTempCustomServiceFee(customServiceFee);
+                                setTempVatPercent(vatPercent);
+                                setTempBillingStartMeterMode(billingStartMeterMode);
+                                setTempBillingStartMeter(billingStartMeter);
+                                setTempOverpowerThreshold(overpowerThreshold);
+                                setTempIsSoundEnabled(isSoundEnabled);
+                                setTempIsOverpowerAlertEnabled(isOverpowerAlertEnabled);
+                                setTempIsOnlineOfflineAlertEnabled(isOnlineOfflineAlertEnabled);
+                                setTempAutoPruneDays(autoPruneDays);
+                              }}
+                              className={`px-3 py-1.5 text-[11px] font-bold rounded-xl transition-all cursor-pointer ${
+                                isDarkMode ? "bg-zinc-800 hover:bg-zinc-700 text-zinc-300" : "bg-zinc-100 hover:bg-zinc-200 text-zinc-700"
+                              }`}
+                            >
+                              ยกเลิก
+                            </button>
+                            <button
+                              onClick={() => {
+                                setShowConfirmModal(true);
+                              }}
+                              className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-black text-[11px] font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-amber-500/10"
+                            >
+                              ยืนยันการแก้ไข
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className={`border-t pt-4 mt-2 space-y-3 ${
+                      isDarkMode ? "border-zinc-800/60" : "border-zinc-150"
+                    }`}>
+                      <div className="text-left">
+                        <span className={`text-xs font-bold block ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>ล้างข้อมูลทั้งหมดด้วยตนเอง (Manual Purge):</span>
+                        <span className={`text-[10px] leading-relaxed mt-1 block ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>
+                          ลบข้อมูลบันทึกทั้งหมดของมิเตอร์นี้ออกจาก Firestore ในรอบบิลปัจจุบันทันที (ไม่มีผลต่อการตั้งค่าระบบ)
+                        </span>
+                      </div>
+                      <button
+                        onClick={clearHistory}
+                        disabled={isClearing}
+                        className="w-full py-2.5 px-4 bg-rose-600/10 hover:bg-rose-600/25 text-rose-500 hover:text-rose-400 border border-rose-500/20 hover:border-rose-500/30 text-xs font-bold rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center gap-2"
+                      >
+                        {isClearing ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                        ล้างข้อมูลประวัติและค่าทั้งหมด
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </motion.div>
@@ -2829,11 +3234,15 @@ export default function App() {
                 <span className={`${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>5. เกณฑ์กำลังไฟเกิน:</span>
                 <span>{overpowerThreshold}W ➜ <span className="text-rose-500 font-bold">{tempOverpowerThreshold}W</span></span>
               </div>
-              <div className="flex justify-between">
+              <div className={`flex justify-between border-b pb-2 ${isDarkMode ? "border-zinc-800/40" : "border-zinc-200/60"}`}>
                 <span className={`${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>6. แจ้งเตือนความปลอดภัย:</span>
                 <span className="text-emerald-500 font-bold">
-                  {tempIsSoundEnabled ? "เปิดเสียง" : "ปิดเสียง"} / {tempIsOverpowerAlertEnabled ? "แจ้งเตือนเกินพิกัด" : "ปิดแจ้งเตือนเกินพิกัด"}
+                  {tempIsSoundEnabled ? "เปิดเสียง" : "ปิดเสียง"} / {tempIsOverpowerAlertEnabled ? "แจ้งเตือนเกินพิกัด" : "ปิดแจ้งเตือน"}
                 </span>
+              </div>
+              <div className="flex justify-between">
+                <span className={`${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>7. ลบประวัติเก่าอัตโนมัติ:</span>
+                <span>{autoPruneDays === 0 ? "ปิด" : `${autoPruneDays} วัน`} ➜ <span className="text-emerald-500 font-bold">{tempAutoPruneDays === 0 ? "ปิด" : `${tempAutoPruneDays} วัน`}</span></span>
               </div>
             </div>
 
@@ -2860,6 +3269,7 @@ export default function App() {
                     setIsSoundEnabled(tempIsSoundEnabled);
                     setIsOverpowerAlertEnabled(tempIsOverpowerAlertEnabled);
                     setIsOnlineOfflineAlertEnabled(tempIsOnlineOfflineAlertEnabled);
+                    setAutoPruneDays(tempAutoPruneDays);
 
                     // Update localStorage
                     localStorage.setItem("pzem_ft_rate", tempFtRate.toString());
@@ -2872,6 +3282,7 @@ export default function App() {
                     localStorage.setItem("pzem_sound_enabled", tempIsSoundEnabled ? "true" : "false");
                     localStorage.setItem("pzem_overpower_enabled", tempIsOverpowerAlertEnabled ? "true" : "false");
                     localStorage.setItem("pzem_online_offline_enabled", tempIsOnlineOfflineAlertEnabled ? "true" : "false");
+                    localStorage.setItem("pzem_auto_prune_days", tempAutoPruneDays.toString());
 
                     // Save to Firestore at once
                     await updateGlobalSettings({
@@ -2885,7 +3296,13 @@ export default function App() {
                       isSoundEnabled: tempIsSoundEnabled,
                       isOverpowerAlertEnabled: tempIsOverpowerAlertEnabled,
                       isOnlineOfflineAlertEnabled: tempIsOnlineOfflineAlertEnabled,
+                      autoPruneDays: tempAutoPruneDays,
                     });
+
+                    // If auto-prune was just enabled/changed, let's trigger it immediately
+                    if (tempAutoPruneDays > 0) {
+                      runAutoPruning(tempAutoPruneDays);
+                    }
 
                     setShowConfirmModal(false);
                   } catch (err) {
