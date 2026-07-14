@@ -59,6 +59,7 @@ import {
 } from "lucide-react";
 
 import ChartSection from "./components/ChartSection";
+import HardwareGuide from "./components/HardwareGuide";
 
 export default function App() {
   const [readings, setReadings] = useState<PowerReading[]>([]);
@@ -93,7 +94,7 @@ export default function App() {
     return parseFloat(localStorage.getItem("pzem_billing_start_meter") || "0");
   });
   const [isClearing, setIsClearing] = useState(false);
-  const [activeTab, setActiveTab] = useState<"dashboard" | "history" | "settings">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "history" | "settings" | "about">("dashboard");
   const [meterOffset, setMeterOffset] = useState<number>(() => {
     return parseFloat(localStorage.getItem("pzem_meter_offset") || "0");
   });
@@ -131,9 +132,26 @@ export default function App() {
         const result = await Notification.requestPermission();
         setBrowserNotificationPermission(result);
         if (result === "granted") {
-          new Notification("เปิดระบบแจ้งเตือนสำเร็จ! 🎉", {
+          const title = "เปิดระบบแจ้งเตือนสำเร็จ! 🎉";
+          const options = {
             body: "คุณจะได้รับการแจ้งเตือนสถานะอุปกรณ์ PZEM-004T ทันทีแม้ในขณะที่ไม่ได้มองหน้าจอแอปนี้ค้างไว้",
-          });
+            icon: "./icon-512.jpg",
+            badge: "./icon-512.jpg",
+            vibrate: [200, 100, 200]
+          };
+
+          if ("serviceWorker" in navigator) {
+            navigator.serviceWorker.ready.then((reg) => {
+              reg.showNotification(title, options);
+            }).catch(() => {
+              new Notification(title, options);
+            });
+          } else {
+            new Notification(title, options);
+          }
+
+          setIsNotificationPromptDismissed(true);
+          localStorage.setItem("pzem_notif_prompt_dismissed", "true");
         }
       } catch (e) {
         console.error("Error requesting notification permission:", e);
@@ -163,6 +181,9 @@ export default function App() {
   const [isOverpowerActive, setIsOverpowerActive] = useState<boolean>(false);
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
   const [isOfflineBannerDismissed, setIsOfflineBannerDismissed] = useState<boolean>(true);
+  const [isNotificationPromptDismissed, setIsNotificationPromptDismissed] = useState<boolean>(() => {
+    return localStorage.getItem("pzem_notif_prompt_dismissed") === "true";
+  });
 
   const [showStepBreakdown, setShowStepBreakdown] = useState(false);
   const [showTodayBreakdown, setShowTodayBreakdown] = useState(false);
@@ -833,7 +854,7 @@ export default function App() {
                   }
                 }
 
-                // 2. Trigger native OS/Browser background notification if granted
+                // 2. Trigger native OS/Browser background notification if granted (using Service Worker if available for reliable background execution)
                 if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
                   try {
                     let emoji = "🔔";
@@ -842,11 +863,25 @@ export default function App() {
                     if (notif.type === "overpower") emoji = "⚠️";
                     if (notif.type === "overpower_normal") emoji = "✅";
 
-                    new Notification(`${emoji} ${notif.title}`, {
+                    const notificationTitle = `${emoji} ${notif.title}`;
+                    const notificationOptions = {
                       body: notif.message,
+                      icon: "./icon-512.jpg",
+                      badge: "./icon-512.jpg",
+                      vibrate: [200, 100, 200],
                       requireInteraction: notif.type === "overpower", // High priority alerts stay on screen
                       tag: `pzem_alert_${notif.type}` // Prevent clutter by replacement
-                    });
+                    };
+
+                    if ("serviceWorker" in navigator) {
+                      navigator.serviceWorker.ready.then((reg) => {
+                        reg.showNotification(notificationTitle, notificationOptions);
+                      }).catch(() => {
+                        new Notification(notificationTitle, notificationOptions);
+                      });
+                    } else {
+                      new Notification(notificationTitle, notificationOptions);
+                    }
                   } catch (e) {
                     console.warn("Failed to trigger browser notification:", e);
                   }
@@ -1161,7 +1196,7 @@ export default function App() {
     }
   }
 
-  // Calculate today's cost without service fee (as it is a monthly fixed charge)
+  // Calculate today's cost without service fee (as it is a daily metric)
   const todayCostDetails = calculateProgressiveCost(
     todayKWh,
     ftRate,
@@ -1181,60 +1216,283 @@ export default function App() {
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   return (
-    <div className={`min-h-screen font-sans pb-16 transition-colors duration-300 ${
+    <div className={`min-h-screen font-sans transition-colors duration-300 flex flex-col lg:flex-row ${
       isDarkMode ? "bg-black text-zinc-100" : "bg-zinc-50 text-zinc-800"
     }`}>
-      {/* Top Navigation / Brand Header */}
-      <header className={`sticky top-0 z-50 backdrop-blur-md border-b transition-colors duration-300 ${
-        isDarkMode ? "bg-black/80 border-zinc-850" : "bg-white/85 border-zinc-200/80 shadow-sm"
-      }`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row items-center justify-between gap-4">
+      {/* ==================== LEFT SIDEBAR (DESKTOP) ==================== */}
+      <aside className={`hidden lg:flex lg:flex-col lg:w-76 lg:h-screen lg:sticky lg:top-0 border-r shrink-0 transition-all duration-300 ${
+        isDarkMode ? "bg-zinc-950 border-zinc-900 text-zinc-100" : "bg-white border-zinc-200 shadow-sm text-zinc-800"
+      }`} id="desktop-sidebar">
+        {/* Sidebar Header / Brand */}
+        <div className="p-6 pb-4 border-b border-zinc-200/50 dark:border-zinc-800/50">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-500 flex items-center justify-center text-black shadow-lg shadow-emerald-500/10">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 to-teal-500 flex items-center justify-center text-black shadow-lg shadow-emerald-500/10 shrink-0">
               <Zap className="w-5 h-5 fill-current" />
             </div>
             <div>
-              <h1 className={`text-xl font-bold tracking-tight flex items-center gap-2 ${isDarkMode ? "text-white" : "text-zinc-900"}`}>
-                PZEM-004T <span className={`font-mono text-xs uppercase px-2 py-0.5 rounded border ${
+              <h1 className={`text-lg font-extrabold tracking-tight flex flex-col ${isDarkMode ? "text-white" : "text-zinc-900"}`}>
+                <span>PZEM-004T</span>
+                <span className={`font-mono text-[9px] w-max mt-0.5 uppercase px-1.5 py-0.5 rounded border leading-none ${
                   isDarkMode ? "text-zinc-500 bg-zinc-900 border-zinc-800" : "text-zinc-500 bg-zinc-100 border-zinc-200"
                 }`}>Realtime Monitor</span>
               </h1>
-              <p className={`text-xs ${isDarkMode ? "text-zinc-500" : "text-zinc-500"}`}>
-                ระบบวิเคราะห์กำลังไฟฟ้าเรียลไทม์ผ่านบอร์ด ESP32 และเซนเซอร์ PZEM-004T + Firebase Firestore
-              </p>
+            </div>
+          </div>
+          <p className={`text-[11px] mt-3 leading-relaxed ${isDarkMode ? "text-zinc-500" : "text-zinc-500"}`}>
+            ระบบวิเคราะห์กำลังไฟฟ้าเรียลไทม์ผ่านบอร์ด ESP32 และเซนเซอร์ PZEM-004T + Firebase
+          </p>
+        </div>
+
+        {/* Connection Status Badge (Sidebar version) */}
+        <div className="px-6 py-4 border-b border-zinc-200/50 dark:border-zinc-800/50">
+          <div className={`p-3 rounded-2xl border flex flex-col gap-2.5 transition-colors duration-300 ${
+            isDarkMode ? "bg-zinc-900/40 border-zinc-900" : "bg-zinc-50 border-zinc-200/60"
+          }`}>
+            <div className="flex items-center justify-between">
+              <p className={`text-[9px] uppercase tracking-widest font-black font-mono ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>Firebase Sync</p>
+              <p className="text-[10px] font-mono text-emerald-500 font-extrabold">CONNECTED</p>
+            </div>
+            <div className="flex items-center justify-between mt-0.5">
+              <span className={`text-[10px] flex items-center gap-1 font-mono ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+                <Clock className="w-3 h-3 text-indigo-500 dark:text-indigo-400" /> {latestReading ? getLastUpdatedText() : "ไม่มีข้อมูล"}
+              </span>
+              <div className="flex items-center gap-1">
+                <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? "bg-emerald-400 animate-pulse" : "bg-zinc-400"}`} />
+                <span className={`text-[9px] font-bold uppercase font-mono tracking-wider ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+                  {isOnline ? "Online" : "Offline"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Sidebar Navigation Links */}
+        <nav className="flex-1 px-4 py-6 flex flex-col gap-1.5">
+          <button
+            onClick={() => setActiveTab("dashboard")}
+            className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer border ${
+              activeTab === "dashboard"
+                ? isDarkMode
+                  ? "bg-zinc-900 text-emerald-400 border-zinc-800 shadow-md"
+                  : "bg-zinc-50 text-emerald-600 border-zinc-200 shadow-sm"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-350"
+            }`}
+          >
+            <Zap className={`w-4 h-4 transition-all duration-300 ${
+              activeTab === "dashboard"
+                ? "text-emerald-500 dark:text-emerald-400 fill-emerald-500/10 scale-110 drop-shadow-[0_0_6px_rgba(16,185,129,0.35)]"
+                : "text-zinc-500"
+            }`} />
+            <span>แผงควบคุม (Dashboard)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("history")}
+            className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer border ${
+              activeTab === "history"
+                ? isDarkMode
+                  ? "bg-zinc-900 text-blue-400 border-zinc-800 shadow-md"
+                  : "bg-zinc-50 text-blue-600 border-zinc-200 shadow-sm"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-350"
+            }`}
+          >
+            <Clock className={`w-4 h-4 transition-all duration-300 ${
+              activeTab === "history"
+                ? "text-blue-500 dark:text-blue-400 fill-blue-500/10 scale-110 drop-shadow-[0_0_6px_rgba(59,130,246,0.35)]"
+                : "text-zinc-500"
+            }`} />
+            <span>ประวัติส่งค่า (History)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer border ${
+              activeTab === "settings"
+                ? isDarkMode
+                  ? "bg-zinc-900 text-amber-400 border-zinc-800 shadow-md"
+                  : "bg-zinc-50 text-amber-600 border-zinc-200 shadow-sm"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-350"
+            }`}
+          >
+            <Cpu className={`w-4 h-4 transition-all duration-300 ${
+              activeTab === "settings"
+                ? "text-amber-500 dark:text-amber-400 fill-amber-500/10 scale-110 drop-shadow-[0_0_6px_rgba(245,158,11,0.35)]"
+                : "text-zinc-500"
+            }`} />
+            <span>ตั้งค่าระบบ (Settings)</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("about")}
+            className={`w-full flex items-center gap-3 px-4 py-3 text-xs font-bold uppercase tracking-wider rounded-xl transition-all cursor-pointer border ${
+              activeTab === "about"
+                ? isDarkMode
+                  ? "bg-zinc-900 text-teal-400 border-zinc-800 shadow-md"
+                  : "bg-zinc-50 text-teal-600 border-zinc-200 shadow-sm"
+                : "border-transparent text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-350"
+            }`}
+          >
+            <Info className={`w-4 h-4 transition-all duration-300 ${
+              activeTab === "about"
+                ? "text-teal-500 dark:text-teal-400 fill-teal-500/10 scale-110 drop-shadow-[0_0_6px_rgba(20,184,166,0.35)]"
+                : "text-zinc-500"
+            }`} />
+            <span>เกี่ยวกับแอป (About)</span>
+          </button>
+        </nav>
+
+        {/* Sidebar Footer Controls */}
+        <div className="p-6 border-t border-zinc-200/50 dark:border-zinc-800/50 flex items-center justify-between gap-3 relative">
+          {/* Notification Button inside Sidebar */}
+          <div className="relative flex-1">
+            <button
+              onClick={() => {
+                setShowNotificationsDropdown(!showNotificationsDropdown);
+                if (!showNotificationsDropdown) {
+                  markAllNotificationsAsRead();
+                }
+              }}
+              className={`w-full py-2.5 px-4 rounded-xl border transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer shadow-sm relative text-xs font-bold ${
+                isDarkMode
+                  ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-850"
+                  : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50"
+              }`}
+            >
+              {unreadCount > 0 ? (
+                <BellRing className="w-4 h-4 text-rose-500 fill-rose-500/10 animate-bounce shrink-0" />
+              ) : (
+                <Bell className="w-4 h-4 shrink-0" />
+              )}
+              <span>แจ้งเตือน</span>
+              {unreadCount > 0 && (
+                <span className="px-1.5 py-0.5 bg-rose-500 text-white text-[9px] font-black font-mono rounded-full border border-black shadow-lg">
+                  {unreadCount}
+                </span>
+              )}
+            </button>
+
+            {showNotificationsDropdown && (
+              <>
+                <div 
+                  className="fixed inset-0 z-45 cursor-default" 
+                  onClick={() => setShowNotificationsDropdown(false)} 
+                />
+                <div className={`absolute bottom-14 left-0 w-80 rounded-3xl border shadow-2xl p-4 z-50 animate-in fade-in slide-in-from-bottom-3 duration-200 ${
+                  isDarkMode ? "bg-zinc-950 border-zinc-800 text-zinc-100" : "bg-white border-zinc-200 text-zinc-800"
+                }`}>
+                  <div className="flex items-center justify-between pb-3 border-b border-zinc-800/50 mb-3">
+                    <div className="flex items-center gap-1.5">
+                      <Bell className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      <h4 className="font-bold text-sm">แจ้งเตือนระบบ ({notifications.length})</h4>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {notifications.length > 0 && (
+                        <button
+                          onClick={clearNotifications}
+                          className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded hover:opacity-80 transition-opacity cursor-pointer ${
+                            isDarkMode ? "bg-zinc-900 text-zinc-400 hover:bg-zinc-850" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
+                          }`}
+                        >
+                          ล้างทั้งหมด
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => setShowNotificationsDropdown(false)}
+                        className={`text-[9px] font-bold px-2 py-0.5 rounded hover:opacity-80 transition-opacity cursor-pointer ${
+                          isDarkMode ? "bg-zinc-900 text-zinc-500" : "bg-zinc-100 text-zinc-600"
+                        }`}
+                      >
+                        ปิด
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-64 overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                    {notifications.length === 0 ? (
+                      <div className="text-center py-6 text-zinc-500">
+                        <CheckCircle className="w-6 h-6 mx-auto text-zinc-600/60 mb-2" />
+                        <p className="text-[11px]">ไม่มีรายการแจ้งเตือนใหม่</p>
+                      </div>
+                    ) : (
+                      notifications.map((notif) => (
+                        <div
+                          key={notif.id}
+                          className={`p-2.5 rounded-xl border transition-colors flex gap-2 items-start ${
+                            notif.type === "overpower"
+                              ? (isDarkMode ? "bg-rose-500/10 border-rose-500/20" : "bg-rose-50 border-rose-200")
+                              : notif.type === "offline"
+                              ? (isDarkMode ? "bg-amber-500/10 border-amber-500/20" : "bg-amber-50 border-amber-200")
+                              : notif.type === "online"
+                              ? (isDarkMode ? "bg-emerald-500/10 border-emerald-500/20" : "bg-emerald-50 border-emerald-200")
+                              : (isDarkMode ? "bg-blue-500/5 border-blue-500/10" : "bg-blue-50 border-blue-100")
+                          }`}
+                        >
+                          <div className="mt-0.5 shrink-0">
+                            {notif.type === "overpower" ? (
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+                            ) : notif.type === "offline" ? (
+                              <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                            ) : notif.type === "online" ? (
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                            ) : (
+                              <Activity className="w-3.5 h-3.5 text-blue-500" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0 text-left">
+                            <p className="text-[11px] font-bold leading-tight">{notif.title}</p>
+                            <p className="text-[9px] mt-0.5 leading-normal opacity-85">{notif.message}</p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Theme switcher inside Sidebar */}
+          <button
+            onClick={toggleTheme}
+            className={`p-2.5 rounded-xl border transition-all duration-300 flex items-center justify-center cursor-pointer shadow-sm ${
+              isDarkMode
+                ? "bg-zinc-900 border-zinc-800 text-amber-400 hover:text-amber-300 hover:bg-zinc-850"
+                : "bg-white border-zinc-250 text-indigo-600 hover:text-indigo-500 hover:bg-zinc-50"
+            }`}
+            title={isDarkMode ? "เปลี่ยนเป็นโหมดสว่าง" : "เปลี่ยนเป็นโหมดมืด"}
+          >
+            {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          </button>
+        </div>
+      </aside>
+
+      {/* ==================== MOBILE TOP HEADER ==================== */}
+      <header className={`sticky top-0 z-50 backdrop-blur-md border-b lg:hidden transition-all duration-300 ${
+        isDarkMode ? "bg-black/80 border-zinc-850" : "bg-white/85 border-zinc-200/80 shadow-sm"
+      }`} id="mobile-header">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-emerald-500 to-teal-500 flex items-center justify-center text-black shadow-lg shadow-emerald-500/10">
+              <Zap className="w-4 h-4 fill-current" />
+            </div>
+            <div>
+              <h1 className={`text-sm font-black tracking-tight ${isDarkMode ? "text-white" : "text-zinc-900"}`}>
+                PZEM-004T
+              </h1>
+              <p className={`text-[9px] leading-none opacity-65`}>Realtime Monitor</p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Quick Connection Status Badge */}
-            <div className={`flex items-center gap-4 p-2 px-4 rounded-2xl border transition-colors duration-300 ${
-              isDarkMode ? "bg-zinc-950/80 border-zinc-900" : "bg-white border-zinc-200/80 shadow-sm"
+          <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border ${
+              isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-zinc-100 border-zinc-200"
             }`}>
-              <div className="text-right hidden sm:block">
-                <p className={`text-[10px] uppercase tracking-widest font-semibold font-mono ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>Firebase Sync</p>
-                <p className="text-xs font-mono text-emerald-500 font-bold">CONNECTED</p>
-              </div>
-              <div className={`h-8 w-[1px] hidden sm:block ${isDarkMode ? "bg-zinc-850" : "bg-zinc-200"}`}></div>
-              <div className="flex items-center gap-3">
-                <span className={`text-xs flex items-center gap-1.5 font-mono ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
-                  <Clock className="w-3.5 h-3.5 text-indigo-500 dark:text-indigo-400 fill-indigo-500/15" /> {latestReading ? getLastUpdatedText() : "ไม่มีข้อมูล"}
-                </span>
-                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border ${
-                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-zinc-100 border-zinc-200"
-                }`}>
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      isOnline ? "bg-emerald-400 animate-pulse" : "bg-zinc-400"
-                    }`}
-                  />
-                  <span className={`text-[9px] font-bold uppercase font-mono tracking-wider ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
-                    {isOnline ? "Online" : "Offline"}
-                  </span>
-                </div>
-              </div>
+              <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? "bg-emerald-400 animate-pulse" : "bg-zinc-400"}`} />
+              <span className={`text-[8px] font-bold uppercase font-mono tracking-wider ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+                {isOnline ? "Online" : "Offline"}
+              </span>
             </div>
 
-            {/* Notification Bell Button & Dropdown */}
             <div className="relative">
               <button
                 onClick={() => {
@@ -1243,20 +1501,17 @@ export default function App() {
                     markAllNotificationsAsRead();
                   }
                 }}
-                className={`p-2.5 rounded-2xl border transition-all duration-300 flex items-center justify-center cursor-pointer shadow-sm relative ${
-                  isDarkMode
-                    ? "bg-zinc-900 border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-850"
-                    : "bg-white border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50"
+                className={`p-2 rounded-xl border transition-all duration-300 flex items-center justify-center cursor-pointer relative ${
+                  isDarkMode ? "bg-zinc-900 border-zinc-800 text-zinc-350" : "bg-white border-zinc-200 text-zinc-600"
                 }`}
-                title="การแจ้งเตือนระบบ"
               >
                 {unreadCount > 0 ? (
-                  <BellRing className="w-5 h-5 text-rose-500 fill-rose-500/10 animate-bounce" />
+                  <BellRing className="w-4 h-4 text-rose-500 fill-rose-500/10 animate-bounce" />
                 ) : (
-                  <Bell className="w-5 h-5" />
+                  <Bell className="w-4 h-4" />
                 )}
                 {unreadCount > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 px-1.5 py-0.5 bg-rose-500 text-white text-[9px] font-black font-mono rounded-full border border-black shadow-lg">
+                  <span className="absolute -top-1 -right-1 px-1 bg-rose-500 text-white text-[8px] font-black font-mono rounded-full">
                     {unreadCount}
                   </span>
                 )}
@@ -1264,82 +1519,22 @@ export default function App() {
 
               {showNotificationsDropdown && (
                 <>
-                  {/* Backdrop overlay to close when clicking outside */}
-                  <div 
-                    className="fixed inset-0 z-45 cursor-default" 
-                    onClick={() => setShowNotificationsDropdown(false)} 
-                  />
-                  <div className={`absolute right-0 mt-3 w-80 sm:w-96 rounded-3xl border shadow-2xl p-4 z-50 animate-in fade-in slide-in-from-top-3 duration-200 ${
+                  <div className="fixed inset-0 z-45" onClick={() => setShowNotificationsDropdown(false)} />
+                  <div className={`absolute right-0 mt-2 w-72 rounded-2xl border shadow-xl p-3 z-50 animate-in fade-in duration-200 ${
                     isDarkMode ? "bg-zinc-950 border-zinc-800 text-zinc-100" : "bg-white border-zinc-200 text-zinc-800"
                   }`}>
-                    <div className="flex items-center justify-between pb-3 border-b border-zinc-800/50 mb-3">
-                      <div className="flex items-center gap-1.5">
-                        <Bell className="w-4 h-4 text-emerald-400 animate-pulse" />
-                        <h4 className="font-bold text-sm">การแจ้งเตือนระบบ ({notifications.length})</h4>
-                      </div>
-                      <div className="flex gap-2">
-                        {notifications.length > 0 && (
-                          <button
-                            onClick={clearNotifications}
-                            className={`text-[10px] font-bold font-mono px-2 py-1 rounded hover:opacity-80 transition-opacity cursor-pointer ${
-                              isDarkMode ? "bg-zinc-900 text-zinc-400 hover:bg-zinc-850" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
-                            }`}
-                          >
-                            ล้างทั้งหมด
-                          </button>
-                        )}
-                        <button 
-                          onClick={() => setShowNotificationsDropdown(false)}
-                          className={`text-[10px] font-bold px-2 py-1 rounded hover:opacity-80 transition-opacity cursor-pointer ${
-                            isDarkMode ? "bg-zinc-900 text-zinc-500" : "bg-zinc-100 text-zinc-600"
-                          }`}
-                        >
-                          ปิด
-                        </button>
-                      </div>
+                    <div className="flex items-center justify-between pb-2 border-b border-zinc-850 mb-2">
+                      <span className="text-xs font-bold">การแจ้งเตือน ({notifications.length})</span>
+                      <button onClick={clearNotifications} className="text-[9px] text-zinc-500 font-mono">ล้าง</button>
                     </div>
-
-                    <div className="max-h-80 overflow-y-auto space-y-2.5 pr-1 scrollbar-thin">
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 scrollbar-thin">
                       {notifications.length === 0 ? (
-                        <div className="text-center py-8 text-zinc-500">
-                          <CheckCircle className="w-8 h-8 mx-auto text-zinc-600/60 mb-2" />
-                          <p className="text-xs">ไม่มีรายการแจ้งเตือนใหม่</p>
-                          <p className="text-[10px] text-zinc-600 mt-1 leading-relaxed">ระบบจะแจ้งเตือนเมื่ออุปกรณ์ออนไลน์/ออฟไลน์ หรือกำลังไฟเกินกำหนด</p>
-                        </div>
+                        <p className="text-center py-4 text-[10px] text-zinc-500">ไม่มีแจ้งเตือน</p>
                       ) : (
                         notifications.map((notif) => (
-                          <div
-                            key={notif.id}
-                            className={`p-3 rounded-2xl border transition-colors flex gap-2.5 items-start ${
-                              notif.type === "overpower"
-                                ? (isDarkMode ? "bg-rose-500/10 border-rose-500/20" : "bg-rose-50 border-rose-200")
-                                : notif.type === "offline"
-                                ? (isDarkMode ? "bg-amber-500/10 border-amber-500/20" : "bg-amber-50 border-amber-200")
-                                : notif.type === "online"
-                                ? (isDarkMode ? "bg-emerald-500/10 border-emerald-500/20" : "bg-emerald-50 border-emerald-200")
-                                : (isDarkMode ? "bg-blue-500/5 border-blue-500/10" : "bg-blue-50 border-blue-100")
-                            }`}
-                          >
-                            <div className="mt-0.5 shrink-0">
-                              {notif.type === "overpower" ? (
-                                <AlertTriangle className="w-4 h-4 text-rose-500" />
-                              ) : notif.type === "offline" ? (
-                                <ShieldAlert className="w-4 h-4 text-amber-500" />
-                              ) : notif.type === "online" ? (
-                                <CheckCircle className="w-4 h-4 text-emerald-500" />
-                              ) : (
-                                <Activity className="w-4 h-4 text-blue-500" />
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0 text-left">
-                              <p className="text-xs font-bold leading-tight">{notif.title}</p>
-                              <p className={`text-[10px] mt-0.5 leading-normal ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
-                                {notif.message}
-                              </p>
-                              <span className={`text-[9px] mt-1.5 block font-mono ${isDarkMode ? "text-zinc-600" : "text-zinc-400"}`}>
-                                {new Date(notif.timestamp).toLocaleTimeString("th-TH")} ({new Date(notif.timestamp).toLocaleDateString("th-TH")})
-                              </span>
-                            </div>
+                          <div key={notif.id} className="text-[10px] p-2 rounded-lg bg-zinc-900/40 text-left">
+                            <p className="font-bold">{notif.title}</p>
+                            <p className="text-[9px] opacity-85">{notif.message}</p>
                           </div>
                         ))
                       )}
@@ -1349,27 +1544,24 @@ export default function App() {
               )}
             </div>
 
-            {/* Dark / Light Mode Switcher Button */}
             <button
               onClick={toggleTheme}
-              className={`p-2.5 rounded-2xl border transition-all duration-300 flex items-center justify-center cursor-pointer shadow-sm ${
-                isDarkMode
-                  ? "bg-zinc-900 border-zinc-800 text-amber-400 hover:text-amber-300 hover:bg-zinc-850"
-                  : "bg-white border-zinc-250 text-indigo-600 hover:text-indigo-500 hover:bg-zinc-50"
+              className={`p-2 rounded-xl border transition-all duration-300 flex items-center justify-center cursor-pointer ${
+                isDarkMode ? "bg-zinc-900 border-zinc-800 text-amber-400" : "bg-white border-zinc-250 text-indigo-600"
               }`}
-              title={isDarkMode ? "เปลี่ยนเป็นโหมดสว่าง" : "เปลี่ยนเป็นโหมดมืด"}
             >
-              {isDarkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
           </div>
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8 space-y-6">
+      {/* ==================== MAIN CONTENT WRAPPER ==================== */}
+      <div className="flex-1 flex flex-col min-w-0" id="main-content-scroller">
+        <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8 space-y-6">
         
         {/* Real-time Status Alert Banners */}
-        {(isOverpowerActive || (!isOnline && isOnlineOfflineAlertEnabled && !isOfflineBannerDismissed)) && (
+        {(isOverpowerActive || (!isOnline && isOnlineOfflineAlertEnabled && !isOfflineBannerDismissed) || (browserNotificationPermission !== "granted" && !isNotificationPromptDismissed)) && (
           <div className="space-y-3">
             {isOverpowerActive && (
               <motion.div
@@ -1425,11 +1617,97 @@ export default function App() {
                 </div>
               </motion.div>
             )}
+
+            {browserNotificationPermission !== "granted" && !isNotificationPromptDismissed && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-teal-500/10 border border-teal-500/25 text-teal-600 dark:text-teal-400 rounded-3xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-lg shadow-teal-500/5"
+              >
+                <div className="flex items-start md:items-center gap-3">
+                  <div className="p-2.5 bg-teal-500/15 text-teal-500 rounded-2xl border border-teal-500/20 shrink-0">
+                    <Bell className="w-5 h-5 fill-teal-500/10 text-teal-500" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-teal-600 dark:text-teal-300">🔔 เปิดใช้งานแจ้งเตือนแบบพุช (Background Push Notifications)</h4>
+                    <p className={`text-xs mt-0.5 ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+                      ช่วยส่งแจ้งเตือนเข้าเครื่องคุณทันทีเมื่อระบบไฟเกิดอันตรายหรืออุปกรณ์หลุดการทำงาน <span className="font-semibold underline">แม้ในขณะที่คุณไม่ได้เข้าดูแอปนี้ หรือปิดหน้าจอมือถืออยู่</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 w-full md:w-auto shrink-0 justify-between md:justify-end">
+                  <button
+                    onClick={requestNotificationPermission}
+                    className="px-4 py-2 bg-teal-500 hover:bg-teal-650 text-black text-xs font-bold rounded-xl transition-all duration-300 cursor-pointer shadow-md text-center flex-1 md:flex-none"
+                  >
+                    เปิดรับการแจ้งเตือน
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsNotificationPromptDismissed(true);
+                      localStorage.setItem("pzem_notif_prompt_dismissed", "true");
+                    }}
+                    className="p-1.5 rounded-full hover:bg-teal-500/15 transition-colors cursor-pointer text-teal-500 shrink-0"
+                    title="ไม่ต้องแสดงข้อความนี้อีก"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </motion.div>
+            )}
           </div>
         )}
 
+        {/* Desktop View Header Title & Quick Contextual Actions */}
+        <div className="hidden lg:flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-200/60 dark:border-zinc-800/40">
+          <div>
+            <h2 className="text-lg font-black tracking-tight uppercase flex items-center gap-2">
+              {activeTab === "dashboard" && <Zap className="w-5 h-5 text-emerald-500 fill-emerald-500/10" />}
+              {activeTab === "history" && <Clock className="w-5 h-5 text-blue-500 fill-blue-500/10" />}
+              {activeTab === "settings" && <Cpu className="w-5 h-5 text-amber-500 fill-amber-500/10" />}
+              {activeTab === "about" && <Info className="w-5 h-5 text-teal-500 fill-teal-500/10" />}
+              <span>
+                {activeTab === "dashboard" && "แผงควบคุมระบบ (Dashboard)"}
+                {activeTab === "history" && "ประวัติส่งค่า (History Logs)"}
+                {activeTab === "settings" && "ตั้งค่าอุปกรณ์ & อัตราค่าไฟ (Settings)"}
+                {activeTab === "about" && "เกี่ยวกับระบบ (About Application)"}
+              </span>
+            </h2>
+            <p className={`text-xs mt-1 ${isDarkMode ? "text-zinc-500" : "text-zinc-400"}`}>
+              {activeTab === "dashboard" && "ข้อมูลกระแสไฟฟ้า แรงดันไฟฟ้า กำลังไฟฟ้า และค่าไฟคำนวณแบบเรียลไทม์"}
+              {activeTab === "history" && "ประวัติและกราฟข้อมูลย้อนหลังที่ได้รับจากเซนเซอร์ PZEM-004T ผ่าน ESP32"}
+              {activeTab === "settings" && "ปรับแต่งอัตราค่าไฟฟ้า หน่วยตั้งต้น การแจ้งเตือน และจัดระเบียบระบบข้อมูล"}
+              {activeTab === "about" && "คู่มือการต่อใช้งาน บอร์ด ESP32 ซอร์สโค้ด และข้อมูลอัตราค่าไฟฟ้าขั้นบันได"}
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {activeTab === "history" && (
+              <button
+                onClick={clearHistory}
+                disabled={isClearing}
+                className="flex items-center justify-center gap-1.5 px-4 py-2 border border-rose-950 bg-rose-950/20 text-rose-400 hover:bg-rose-950/40 hover:text-rose-300 rounded-xl text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {isClearing ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                ล้างฐานข้อมูล (Clear Firebase)
+              </button>
+            )}
+
+            {activeTab === "settings" && (
+              <div className="text-xs text-zinc-500 dark:text-zinc-400 font-mono flex items-center gap-2 bg-zinc-100 dark:bg-black/40 px-4 py-2 rounded-xl border border-zinc-200 dark:border-zinc-800/60 shadow-sm">
+                <Coins className="w-3.5 h-3.5 text-emerald-400" />
+                <span>อัตราก้าวหน้า + Ft: ฿{ftRate.toFixed(4)} / หน่วย</span>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Control Center: Tab Switcher & Dynamic Context Actions */}
-        <div className={`backdrop-blur-sm p-4 rounded-3xl border flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition-colors duration-300 ${
+        <div className={`backdrop-blur-sm p-4 rounded-3xl border flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition-colors duration-300 lg:hidden ${
           isDarkMode ? "bg-zinc-900/60 border-zinc-800/80" : "bg-white border-zinc-200 shadow-sm"
         }`} id="iot-control-center">
           {/* Navigation Tabs */}
@@ -1492,6 +1770,25 @@ export default function App() {
                   : "text-zinc-500"
               }`} />
               ตั้งค่า & อุปกรณ์ (Settings)
+            </button>
+            <button
+              onClick={() => setActiveTab("about")}
+              className={`flex-1 lg:flex-none flex items-center justify-center gap-2 px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+                activeTab === "about"
+                  ? isDarkMode
+                    ? "bg-zinc-800 text-teal-400 border border-zinc-700/50 shadow-lg font-bold"
+                    : "bg-white text-teal-600 border border-zinc-200 shadow-sm font-bold"
+                  : isDarkMode
+                    ? "text-zinc-500 hover:text-zinc-300"
+                    : "text-zinc-500 hover:text-zinc-700"
+              }`}
+            >
+              <Info className={`w-4 h-4 transition-all duration-300 ${
+                activeTab === "about"
+                  ? "text-teal-500 dark:text-teal-400 fill-teal-500/25 scale-110 drop-shadow-[0_0_6px_rgba(20,184,166,0.35)]"
+                  : "text-zinc-500"
+              }`} />
+              เกี่ยวกับแอป (About)
             </button>
           </div>
 
@@ -2895,148 +3192,10 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Tariff Step Info Card */}
-                <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
-                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
-                }`} id="tariff-info-card">
-                  <div className="space-y-4">
-                    <h4 className={`font-semibold text-base flex items-center gap-1.5 ${
-                      isDarkMode ? "text-white" : "text-zinc-800"
-                    }`}>
-                      <Coins className="w-5 h-5 text-emerald-500 fill-emerald-500/20 drop-shadow-[0_0_4px_rgba(16,185,129,0.25)]" />
-                      ข้อมูลโครงสร้างอัตราค่าไฟฟ้าขั้นบันได (Residential Tariff Type 1.1)
-                    </h4>
-                    <p className={`text-xs leading-relaxed ${
-                      isDarkMode ? "text-zinc-400" : "text-zinc-600"
-                    }`}>
-                      ระบบคำนวณค่าไฟฟ้าแบบขั้นบันไดจริงตามมาตรฐานการไฟฟ้านครหลวงและการไฟฟ้าส่วนภูมิภาคสำหรับบ้านพักอาศัย โดยจะคำนวณตัดรอบบิลโดยอัตโนมัติในทุกวันที่ 25 ของแต่ละเดือน (นับจากวันที่ 26 ของเดือนก่อนหน้า ถึงวันที่ 25 ของเดือนปัจจุบัน)
-                    </p>
-                    
-                    <div className={`overflow-x-auto rounded-xl border ${
-                      isDarkMode ? "border-zinc-800" : "border-zinc-200"
-                    }`}>
-                      <table className={`w-full text-[11px] font-mono text-left ${
-                        isDarkMode ? "text-zinc-400" : "text-zinc-650"
-                      }`}>
-                        <thead className={`text-[10px] font-bold ${
-                          isDarkMode ? "bg-black/40 text-zinc-500" : "bg-zinc-50 text-zinc-500"
-                        }`}>
-                          <tr>
-                            <th className="px-3 py-2.5">ช่วงปริมาณการใช้พลังงานไฟฟ้า</th>
-                            <th className="px-3 py-2.5 text-right">อัตรา (บาท / หน่วย)</th>
-                          </tr>
-                        </thead>
-                        <tbody className={`divide-y ${
-                          isDarkMode ? "divide-zinc-800" : "divide-zinc-100"
-                        }`}>
-                          <tr>
-                            <td className="px-3 py-2">15 หน่วยแรก (หน่วยที่ 0 - 15)</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>2.3488</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2">10 หน่วยถัดไป (หน่วยที่ 16 - 25)</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>2.9882</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2">10 หน่วยถัดไป (หน่วยที่ 26 - 35)</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>3.2405</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2">65 หน่วยถัดไป (หน่วยที่ 36 - 100)</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>3.6237</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2">50 หน่วยถัดไป (หน่วยที่ 101 - 150)</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>3.7171</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2">250 หน่วยถัดไป (หน่วยที่ 151 - 400)</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>4.2218</td>
-                          </tr>
-                          <tr>
-                            <td className="px-3 py-2">ส่วนที่เกิน 400 หน่วยขึ้นไป</td>
-                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>4.4217</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    
-                    <div className={`p-3 rounded-xl border text-[11px] font-mono space-y-1 transition-colors duration-300 ${
-                      isDarkMode ? "bg-black/20 border-zinc-800/40 text-zinc-500" : "bg-zinc-50 border-zinc-200 text-zinc-500"
-                    }`}>
-                      <div>{"• มีค่าบริการรายเดือนเพิ่มเติม: ฿8.19 (หากใช้ <= 150 หน่วย) หรือ ฿38.22 (หากใช้ > 150 หน่วย)"}</div>
-                      <div>• อัตราค่า Ft เฉลี่ยชดเชยคงที่: ฿0.3972 ต่อหน่วย</div>
-                      <div>• รวมภาษีมูลค่าเพิ่ม (VAT): 7% สำหรับสุทธิของบิลค่าไฟทั้งหมด</div>
-                    </div>
-                  </div>
-                </div>
               </div>
 
-              {/* Right Column: PWA Installer */}
+              {/* Right Column: Database Storage */}
               <div className="lg:col-span-5 space-y-6">
-                {/* PWA Installation Assistant Card */}
-                <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
-                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
-                }`}>
-                  <div className="space-y-4">
-                    <h4 className={`font-semibold text-base flex items-center gap-1.5 ${
-                      isDarkMode ? "text-white" : "text-zinc-800"
-                    }`}>
-                      <Download className="w-5 h-5 text-emerald-500 fill-emerald-500/20 drop-shadow-[0_0_4px_rgba(16,185,129,0.25)]" />
-                      ติดตั้งแอปพลิเคชัน (PWA Installation)
-                    </h4>
-                    <p className={`text-xs leading-relaxed ${
-                      isDarkMode ? "text-zinc-400" : "text-zinc-600"
-                    }`}>
-                      คุณสามารถติดตั้งแอป ENERGY SMALI Monitor ลงบนหน้าจอหลักของโทรศัพท์มือถือ แท็บเล็ต หรือคอมพิวเตอร์ เพื่อให้การทำงานลื่นไหลเสมือนเป็นแอปตัวเครื่องโดยตรง และสามารถเรียกใช้งานได้แม้ออฟไลน์
-                    </p>
-                    
-                    {deferredPrompt ? (
-                      <div className="space-y-3">
-                        <div className={`p-3 rounded-2xl border text-xs flex items-center gap-2 font-mono ${
-                          isDarkMode ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-emerald-50 border-emerald-200 text-emerald-700"
-                        }`}>
-                          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                          พร้อมสำหรับการติดตั้งบนอุปกรณ์นี้แล้ว!
-                        </div>
-                        <button
-                          onClick={handleInstallClick}
-                          className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-black text-xs font-bold rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center gap-2 shadow-md active:scale-[0.98]"
-                        >
-                          <Download className="w-4 h-4" />
-                          ติดตั้งแอปพลิเคชันลงบนเครื่องนี้
-                        </button>
-                      </div>
-                    ) : isPWAInstalled ? (
-                      <div className={`p-4 rounded-2xl border text-xs flex items-center gap-3 font-mono ${
-                        isDarkMode ? "bg-zinc-800/40 border-zinc-800 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"
-                      }`}>
-                        <div className="p-2 bg-emerald-500/15 text-emerald-500 rounded-xl">
-                          <CheckCircle className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="font-bold text-emerald-500">ติดตั้งสำเร็จแล้ว!</div>
-                          <div className="text-[10px] mt-0.5">ระบบพร้อมทำงานในโหมดแอปพลิเคชันเดี่ยว (Standalone) แล้ว</div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <div className={`p-4 rounded-2xl border text-xs space-y-2 font-mono ${
-                          isDarkMode ? "bg-zinc-800/20 border-zinc-800/60 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"
-                        }`}>
-                          <div className="font-bold flex items-center gap-1.5">
-                            <Info className="w-3.5 h-3.5 text-blue-400" />
-                            วิธีการติดตั้งด้วยตนเอง:
-                          </div>
-                          <ul className="list-disc list-inside space-y-1 text-[10px] pl-1 leading-relaxed">
-                            <li><strong>บน iOS (Safari):</strong> แแตะที่ปุ่ม <span className="underline">แชร์ (Share)</span> แล้วเลือก <strong>"เพิ่มไปยังหน้าจอโฮม (Add to Home Screen)"</strong></li>
-                            <li><strong>บน Android / PC (Chrome):</strong> กดเครื่องหมายจุดสามจุดบริเวณมุมขวา แล้วเลือก <strong>"ติดตั้งแอป (Install App)"</strong></li>
-                          </ul>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
 
                 {/* Database & Storage Management Card */}
                 <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
@@ -3158,6 +3317,167 @@ export default function App() {
           </motion.div>
         )}
 
+        {/* -------------------- TAB 4: ABOUT & HARDWARE VIEW -------------------- */}
+        {activeTab === "about" && (
+          <motion.div
+            initial={{ opacity: 0, y: 15 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className="space-y-6"
+            id="tab-about-content"
+          >
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: ESP32 Wiring & Code */}
+              <div className="lg:col-span-7 space-y-6">
+                <HardwareGuide />
+              </div>
+
+              {/* Right Column: Tariff & PWA Installation */}
+              <div className="lg:col-span-5 space-y-6">
+                {/* Tariff Step Info Card */}
+                <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
+                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
+                }`} id="tariff-info-card">
+                  <div className="space-y-4">
+                    <h4 className={`font-semibold text-base flex items-center gap-1.5 ${
+                      isDarkMode ? "text-white" : "text-zinc-800"
+                    }`}>
+                      <Coins className="w-5 h-5 text-emerald-500 fill-emerald-500/20 drop-shadow-[0_0_4px_rgba(16,185,129,0.25)]" />
+                      โครงสร้างอัตราค่าไฟฟ้าขั้นบันได (Residential Tariff Type 1.1)
+                    </h4>
+                    <p className={`text-xs leading-relaxed ${
+                      isDarkMode ? "text-zinc-400" : "text-zinc-600"
+                    }`}>
+                      ระบบคำนวณค่าไฟฟ้าแบบขั้นบันไดจริงตามมาตรฐานการไฟฟ้านครหลวงและการไฟฟ้าส่วนภูมิภาคสำหรับบ้านพักอาศัย โดยจะคำนวณตัดรอบบิลโดยอัตโนมัติในทุกวันที่ 25 ของแต่ละเดือน (นับจากวันที่ 26 ของเดือนก่อนหน้า ถึงวันที่ 25 ของเดือนปัจจุบัน)
+                    </p>
+                    
+                    <div className={`overflow-x-auto rounded-xl border ${
+                      isDarkMode ? "border-zinc-800" : "border-zinc-200"
+                    }`}>
+                      <table className={`w-full text-[11px] font-mono text-left ${
+                        isDarkMode ? "text-zinc-400" : "text-zinc-650"
+                      }`}>
+                        <thead className={`text-[10px] font-bold ${
+                          isDarkMode ? "bg-black/40 text-zinc-500" : "bg-zinc-50 text-zinc-500"
+                        }`}>
+                          <tr>
+                            <th className="px-3 py-2.5">ช่วงปริมาณการใช้พลังงานไฟฟ้า</th>
+                            <th className="px-3 py-2.5 text-right">อัตรา (บาท / หน่วย)</th>
+                          </tr>
+                        </thead>
+                        <tbody className={`divide-y ${
+                          isDarkMode ? "divide-zinc-800" : "divide-zinc-100"
+                        }`}>
+                          <tr>
+                            <td className="px-3 py-2">15 หน่วยแรก (หน่วยที่ 0 - 15)</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>2.3488</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2">10 หน่วยถัดไป (หน่วยที่ 16 - 25)</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>2.9882</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2">10 หน่วยถัดไป (หน่วยที่ 26 - 35)</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>3.2405</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2">65 หน่วยถัดไป (หน่วยที่ 36 - 100)</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>3.6237</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2">50 หน่วยถัดไป (หน่วยที่ 101 - 150)</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>3.7171</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2">250 หน่วยถัดไป (หน่วยที่ 151 - 400)</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>4.2218</td>
+                          </tr>
+                          <tr>
+                            <td className="px-3 py-2">ส่วนที่เกิน 400 หน่วยขึ้นไป</td>
+                            <td className={`px-3 py-2 text-right font-bold ${isDarkMode ? "text-zinc-300" : "text-zinc-700"}`}>4.4217</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    
+                    <div className={`p-3 rounded-xl border text-[11px] font-mono space-y-1 transition-colors duration-300 ${
+                      isDarkMode ? "bg-black/20 border-zinc-800/40 text-zinc-500" : "bg-zinc-50 border-zinc-200 text-zinc-500"
+                    }`}>
+                      <div>{"• มีค่าบริการรายเดือนเพิ่มเติม: ฿8.19 (หากใช้ <= 150 หน่วย) หรือ ฿38.22 (หากใช้ > 150 หน่วย)"}</div>
+                      <div>• อัตราค่า Ft เฉลี่ยชดเชยคงที่: ฿0.3972 ต่อหน่วย</div>
+                      <div>• รวมภาษีมูลค่าเพิ่ม (VAT): 7% สำหรับสุทธิของบิลค่าไฟทั้งหมด</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* PWA Installation Assistant Card */}
+                <div className={`p-6 rounded-3xl border transition-all duration-300 shadow-xl ${
+                  isDarkMode ? "bg-zinc-900 border-zinc-800" : "bg-white border-zinc-200 shadow-sm"
+                }`}>
+                  <div className="space-y-4">
+                    <h4 className={`font-semibold text-base flex items-center gap-1.5 ${
+                      isDarkMode ? "text-white" : "text-zinc-800"
+                    }`}>
+                      <Download className="w-5 h-5 text-emerald-500 fill-emerald-500/20 drop-shadow-[0_0_4px_rgba(16,185,129,0.25)]" />
+                      ติดตั้งแอปพลิเคชัน (PWA Installation)
+                    </h4>
+                    <p className={`text-xs leading-relaxed ${
+                      isDarkMode ? "text-zinc-400" : "text-zinc-600"
+                    }`}>
+                      คุณสามารถติดตั้งแอป ENERGY SMALI Monitor ลงบนหน้าจอหลักของโทรศัพท์มือถือ แท็บเล็ต หรือคอมพิวเตอร์ เพื่อให้การทำงานลื่นไหลเสมือนเป็นแอปตัวเครื่องโดยตรง และสามารถเรียกใช้งานได้แม้ออฟไลน์
+                    </p>
+                    
+                    {deferredPrompt ? (
+                      <div className="space-y-3">
+                        <div className={`p-3 rounded-2xl border text-xs flex items-center gap-2 font-mono ${
+                          isDarkMode ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" : "bg-emerald-50 border-emerald-200 text-emerald-700"
+                        }`}>
+                          <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                          พร้อมสำหรับการติดตั้งบนอุปกรณ์นี้แล้ว!
+                        </div>
+                        <button
+                          onClick={handleInstallClick}
+                          className="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-black text-xs font-bold rounded-xl transition-all duration-300 cursor-pointer flex items-center justify-center gap-2 shadow-md active:scale-[0.98]"
+                        >
+                          <Download className="w-4 h-4" />
+                          ติดตั้งแอปพลิเคชันลงบนเครื่องนี้
+                        </button>
+                      </div>
+                    ) : isPWAInstalled ? (
+                      <div className={`p-4 rounded-2xl border text-xs flex items-center gap-3 font-mono ${
+                        isDarkMode ? "bg-zinc-800/40 border-zinc-800 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"
+                      }`}>
+                        <div className="p-2 bg-emerald-500/15 text-emerald-500 rounded-xl">
+                          <CheckCircle className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="font-bold text-emerald-500">ติดตั้งสำเร็จแล้ว!</div>
+                          <div className="text-[10px] mt-0.5">ระบบพร้อมทำงานในโหมดแอปพลิเคชันเดี่ยว (Standalone) แล้ว</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className={`p-4 rounded-2xl border text-xs space-y-2 font-mono ${
+                          isDarkMode ? "bg-zinc-800/20 border-zinc-800/60 text-zinc-400" : "bg-zinc-50 border-zinc-200 text-zinc-600"
+                        }`}>
+                          <div className="font-bold flex items-center gap-1.5">
+                            <Info className="w-3.5 h-3.5 text-blue-400" />
+                            วิธีการติดตั้งด้วยตนเอง:
+                          </div>
+                          <ul className="list-disc list-inside space-y-1 text-[10px] pl-1 leading-relaxed">
+                            <li><strong>บน iOS (Safari):</strong> แแตะที่ปุ่ม <span className="underline">แชร์ (Share)</span> แล้วเลือก <strong>"เพิ่มไปยังหน้าจอโฮม (Add to Home Screen)"</strong></li>
+                            <li><strong>บน Android / PC (Chrome):</strong> กดเครื่องหมายจุดสามจุดบริเวณมุมขวา แล้วเลือก <strong>"ติดตั้งแอป (Install App)"</strong></li>
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
       </main>
 
       {/* Footer information bar matching the mockup */}
@@ -3180,6 +3500,8 @@ export default function App() {
           </span>
         </div>
       </footer>
+
+      </div>
 
       {/* Confirmation Modal for Billing settings updates */}
       {showConfirmModal && (

@@ -9,25 +9,16 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-// Unregister any active Progressive Web App Service Workers and clear caches to force-bypass stale cache
+// Register Progressive Web App Service Worker for offline support and background notifications
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.getRegistrations().then((registrations) => {
-    for (const registration of registrations) {
-      registration.unregister().then(() => {
-        console.log("Service Worker unregistered successfully.");
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js")
+      .then((registration) => {
+        console.log("Service Worker registered successfully with scope:", registration.scope);
+      })
+      .catch((error) => {
+        console.error("Service Worker registration failed:", error);
       });
-    }
-  });
-}
-
-// Clear Cache Storage to purge old index.html and asset bundles
-if ("caches" in window) {
-  caches.keys().then((names) => {
-    for (const name of names) {
-      caches.delete(name).then(() => {
-        console.log("Cache deleted:", name);
-      });
-    }
   });
 }
 
