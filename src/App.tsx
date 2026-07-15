@@ -184,6 +184,9 @@ export default function App() {
   const [isNotificationPromptDismissed, setIsNotificationPromptDismissed] = useState<boolean>(() => {
     return localStorage.getItem("pzem_notif_prompt_dismissed") === "true";
   });
+  const [isFirestoreQuotaExceeded, setIsFirestoreQuotaExceeded] = useState<boolean>(false);
+  const [firestoreErrorMessage, setFirestoreErrorMessage] = useState<string>("");
+  const [refreshCounter, setRefreshCounter] = useState<number>(0);
 
   const [showStepBreakdown, setShowStepBreakdown] = useState(false);
   const [showTodayBreakdown, setShowTodayBreakdown] = useState(false);
@@ -319,6 +322,9 @@ export default function App() {
           if (data.isOverpowerAlertEnabled !== undefined) setIsOverpowerAlertEnabled(data.isOverpowerAlertEnabled);
           if (data.isOnlineOfflineAlertEnabled !== undefined) setIsOnlineOfflineAlertEnabled(data.isOnlineOfflineAlertEnabled);
           if (data.autoPruneDays !== undefined) setAutoPruneDays(data.autoPruneDays);
+          
+          // Cache successful read
+          localStorage.setItem("pzem_cached_settings", JSON.stringify(data));
         } else {
           // Initialize default values in Firestore if document doesn't exist
           setDoc(doc(db, "device_status", "global_settings"), {
@@ -337,8 +343,35 @@ export default function App() {
           }).catch(err => console.error("Error creating initial settings document:", err));
         }
       },
-      (error) => {
+      (error: any) => {
         console.error("Firestore settings sync error:", error);
+        const isQuota = error?.message?.includes("Quota") || error?.message?.includes("quota") || error?.code === "resource-exhausted";
+        if (isQuota) {
+          setIsFirestoreQuotaExceeded(true);
+          setFirestoreErrorMessage(error.message || "");
+        }
+        
+        // Restore from cache
+        const cached = localStorage.getItem("pzem_cached_settings");
+        if (cached) {
+          try {
+            const data = JSON.parse(cached);
+            if (data.ftRate !== undefined) setFtRate(data.ftRate);
+            if (data.serviceFeeMode !== undefined) setServiceFeeMode(data.serviceFeeMode);
+            if (data.customServiceFee !== undefined) setCustomServiceFee(data.customServiceFee);
+            if (data.vatPercent !== undefined) setVatPercent(data.vatPercent);
+            if (data.billingStartMeterMode !== undefined) setBillingStartMeterMode(data.billingStartMeterMode);
+            if (data.billingStartMeter !== undefined) setBillingStartMeter(data.billingStartMeter);
+            if (data.meterOffset !== undefined) setMeterOffset(data.meterOffset);
+            if (data.overpowerThreshold !== undefined) setOverpowerThreshold(data.overpowerThreshold);
+            if (data.isSoundEnabled !== undefined) setIsSoundEnabled(data.isSoundEnabled);
+            if (data.isOverpowerAlertEnabled !== undefined) setIsOverpowerAlertEnabled(data.isOverpowerAlertEnabled);
+            if (data.isOnlineOfflineAlertEnabled !== undefined) setIsOnlineOfflineAlertEnabled(data.isOnlineOfflineAlertEnabled);
+            if (data.autoPruneDays !== undefined) setAutoPruneDays(data.autoPruneDays);
+          } catch (e) {
+            console.error("Error parsing cached settings:", e);
+          }
+        }
       }
     );
     return () => unsubscribe();
@@ -347,10 +380,11 @@ export default function App() {
   // Subscribe to real-time power readings in Firestore
   useEffect(() => {
     setIsLoading(true);
+    // Reduced to 50 to optimize Firestore read quota significantly!
     const q = query(
       collection(db, "power_readings"),
       orderBy("timestamp", "desc"),
-      limit(1500)
+      limit(50)
     );
 
     const unsubscribe = onSnapshot(
@@ -366,92 +400,119 @@ export default function App() {
         });
         setReadings(data);
         setIsLoading(false);
+        
+        // Cache successful read
+        localStorage.setItem("pzem_cached_readings", JSON.stringify(data));
       },
-      (error) => {
+      (error: any) => {
         console.error("Firestore listening error:", error);
         setIsLoading(false);
+        const isQuota = error?.message?.includes("Quota") || error?.message?.includes("quota") || error?.code === "resource-exhausted";
+        if (isQuota) {
+          setIsFirestoreQuotaExceeded(true);
+          setFirestoreErrorMessage(error.message || "");
+        }
+        
+        // Restore from cache
+        const cached = localStorage.getItem("pzem_cached_readings");
+        if (cached) {
+          try {
+            const data = JSON.parse(cached);
+            setReadings(data);
+          } catch (e) {
+            console.error("Error parsing cached readings:", e);
+          }
+        }
       }
     );
 
     return () => unsubscribe();
   }, []);
 
-  // Subscribe to history readings in Firestore based on filter
+  // Fetch history readings in Firestore based on filter (Optimized to skip if not on history tab and use single-fetch getDocs)
   useEffect(() => {
-    setIsHistoryLoading(true);
-    const now = new Date();
-    
-    // Today range (00:00:00 to 23:59:59.999)
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    
-    // Yesterday range
-    const yesterdayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
-    const yesterdayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
-    
-    // Last 7 days
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    
-    // Last 1 month
-    const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
+    if (activeTab !== "history") {
+      setIsHistoryLoading(false);
+      return;
+    }
 
-    let q;
+    const fetchHistory = async () => {
+      setIsHistoryLoading(true);
+      const now = new Date();
+      
+      // Today range (00:00:00 to 23:59:59.999)
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      
+      // Yesterday range
+      const yesterdayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0, 0);
+      const yesterdayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+      
+      // Last 7 days
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      
+      // Last 1 month
+      const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
 
-    if (historyFilter === "today") {
-      q = query(
-        collection(db, "power_readings"),
-        where("timestamp", ">=", todayStart),
-        where("timestamp", "<=", todayEnd),
-        orderBy("timestamp", "desc")
-      );
-    } else if (historyFilter === "yesterday") {
-      q = query(
-        collection(db, "power_readings"),
-        where("timestamp", ">=", yesterdayStart),
-        where("timestamp", "<=", yesterdayEnd),
-        orderBy("timestamp", "desc")
-      );
-    } else if (historyFilter === "7days") {
-      q = query(
-        collection(db, "power_readings"),
-        where("timestamp", ">=", sevenDaysAgo),
-        orderBy("timestamp", "desc")
-      );
-    } else if (historyFilter === "1month") {
-      q = query(
-        collection(db, "power_readings"),
-        where("timestamp", ">=", oneMonthAgo),
-        orderBy("timestamp", "desc")
-      );
-    } else if (historyFilter === "billing") {
-      const periods = getBillingPeriodsList();
-      const selectedPeriod = periods[selectedBillingPeriodIndex];
-      if (selectedPeriod) {
+      let q: any;
+
+      if (historyFilter === "today") {
         q = query(
           collection(db, "power_readings"),
-          where("timestamp", ">=", selectedPeriod.start),
-          where("timestamp", "<=", selectedPeriod.end),
+          where("timestamp", ">=", todayStart),
+          where("timestamp", "<=", todayEnd),
           orderBy("timestamp", "desc")
         );
+      } else if (historyFilter === "yesterday") {
+        q = query(
+          collection(db, "power_readings"),
+          where("timestamp", ">=", yesterdayStart),
+          where("timestamp", "<=", yesterdayEnd),
+          orderBy("timestamp", "desc")
+        );
+      } else if (historyFilter === "7days") {
+        q = query(
+          collection(db, "power_readings"),
+          where("timestamp", ">=", sevenDaysAgo),
+          orderBy("timestamp", "desc"),
+          limit(300) // Reduced from 500 to optimize Firestore read quota
+        );
+      } else if (historyFilter === "1month") {
+        q = query(
+          collection(db, "power_readings"),
+          where("timestamp", ">=", oneMonthAgo),
+          orderBy("timestamp", "desc"),
+          limit(500) // Reduced from 800 to optimize Firestore read quota
+        );
+      } else if (historyFilter === "billing") {
+        const periods = getBillingPeriodsList();
+        const selectedPeriod = periods[selectedBillingPeriodIndex];
+        if (selectedPeriod) {
+          q = query(
+            collection(db, "power_readings"),
+            where("timestamp", ">=", selectedPeriod.start),
+            where("timestamp", "<=", selectedPeriod.end),
+            orderBy("timestamp", "desc"),
+            limit(500) // Reduced from 800 to optimize Firestore read quota
+          );
+        } else {
+          q = query(
+            collection(db, "power_readings"),
+            orderBy("timestamp", "desc"),
+            limit(300)
+          );
+        }
       } else {
+        // "all"
         q = query(
           collection(db, "power_readings"),
           orderBy("timestamp", "desc"),
-          limit(1500)
+          limit(300) // Reduced from 500 to optimize Firestore read quota
         );
       }
-    } else {
-      // "all"
-      q = query(
-        collection(db, "power_readings"),
-        orderBy("timestamp", "desc"),
-        limit(2000)
-      );
-    }
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+      try {
+        const snapshot = await getDocs(q);
         const data: PowerReading[] = [];
         snapshot.forEach((doc) => {
           const docData = doc.data() as Omit<PowerReading, "id">;
@@ -462,31 +523,49 @@ export default function App() {
         });
         setHistoryReadings(data);
         setIsHistoryLoading(false);
-      },
-      (error) => {
-        console.error("Firestore history listening error:", error);
+        
+        // Cache successful read
+        localStorage.setItem(`pzem_cached_history_${historyFilter}`, JSON.stringify(data));
+      } catch (error: any) {
+        console.error("Firestore history fetching error:", error);
         setIsHistoryLoading(false);
+        const isQuota = error?.message?.includes("Quota") || error?.message?.includes("quota") || error?.code === "resource-exhausted";
+        if (isQuota) {
+          setIsFirestoreQuotaExceeded(true);
+          setFirestoreErrorMessage(error.message || "");
+        }
+        
+        // Restore from cache
+        const cached = localStorage.getItem(`pzem_cached_history_${historyFilter}`);
+        if (cached) {
+          try {
+            const data = JSON.parse(cached);
+            setHistoryReadings(data);
+          } catch (e) {
+            console.error("Error parsing cached history readings:", e);
+          }
+        }
       }
-    );
+    };
 
-    return () => unsubscribe();
-  }, [historyFilter, selectedBillingPeriodIndex]);
+    fetchHistory();
+  }, [activeTab, historyFilter, selectedBillingPeriodIndex, refreshCounter]);
 
-  // Subscribe to the first reading of today to calculate daily consumption accurately
+  // Fetch the first reading of today to calculate daily consumption accurately (one-time fetch to save quota)
   useEffect(() => {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    
-    const q = query(
-      collection(db, "power_readings"),
-      where("timestamp", ">=", todayStart),
-      orderBy("timestamp", "asc"),
-      limit(50)
-    );
+    const fetchTodayFirst = async () => {
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      
+      const q = query(
+        collection(db, "power_readings"),
+        where("timestamp", ">=", todayStart),
+        orderBy("timestamp", "asc"),
+        limit(10) // Limit to 10 to find the first real non-simulated reading
+      );
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+      try {
+        const snapshot = await getDocs(q);
         let firstReal: PowerReading | null = null;
         snapshot.forEach((doc) => {
           const data = doc.data() as Omit<PowerReading, "id">;
@@ -498,28 +577,46 @@ export default function App() {
           }
         });
         setTodayFirstReading(firstReal);
-      },
-      (error) => {
-        console.error("Error subscribing to today's first reading:", error);
+        if (firstReal) {
+          localStorage.setItem("pzem_cached_today_first", JSON.stringify(firstReal));
+        }
+      } catch (error: any) {
+        console.error("Error fetching today's first reading:", error);
+        const isQuota = error?.message?.includes("Quota") || error?.message?.includes("quota") || error?.code === "resource-exhausted";
+        if (isQuota) {
+          setIsFirestoreQuotaExceeded(true);
+          setFirestoreErrorMessage(error.message || "");
+        }
+        
+        // Restore from cache
+        const cached = localStorage.getItem("pzem_cached_today_first");
+        if (cached) {
+          try {
+            const data = JSON.parse(cached);
+            setTodayFirstReading(data);
+          } catch (e) {
+            console.error("Error parsing cached today first reading:", e);
+          }
+        }
       }
-    );
+    };
 
-    return () => unsubscribe();
+    fetchTodayFirst();
   }, []);
 
-  // Subscribe to the first reading of the current billing cycle
+  // Fetch the first reading of the current billing cycle (one-time fetch to save quota)
   useEffect(() => {
-    const period = getCurrentBillingPeriod();
-    const q = query(
-      collection(db, "power_readings"),
-      where("timestamp", ">=", period.start),
-      orderBy("timestamp", "asc"),
-      limit(50)
-    );
+    const fetchBillingFirst = async () => {
+      const period = getCurrentBillingPeriod();
+      const q = query(
+        collection(db, "power_readings"),
+        where("timestamp", ">=", period.start),
+        orderBy("timestamp", "asc"),
+        limit(10) // Limit to 10 to find the first real non-simulated reading
+      );
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
+      try {
+        const snapshot = await getDocs(q);
         let firstReal: PowerReading | null = null;
         snapshot.forEach((doc) => {
           const data = doc.data() as Omit<PowerReading, "id">;
@@ -531,13 +628,31 @@ export default function App() {
           }
         });
         setBillingFirstReading(firstReal);
-      },
-      (error) => {
-        console.error("Error subscribing to billing cycle first reading:", error);
+        if (firstReal) {
+          localStorage.setItem("pzem_cached_billing_first", JSON.stringify(firstReal));
+        }
+      } catch (error: any) {
+        console.error("Error fetching billing cycle first reading:", error);
+        const isQuota = error?.message?.includes("Quota") || error?.message?.includes("quota") || error?.code === "resource-exhausted";
+        if (isQuota) {
+          setIsFirestoreQuotaExceeded(true);
+          setFirestoreErrorMessage(error.message || "");
+        }
+        
+        // Restore from cache
+        const cached = localStorage.getItem("pzem_cached_billing_first");
+        if (cached) {
+          try {
+            const data = JSON.parse(cached);
+            setBillingFirstReading(data);
+          } catch (e) {
+            console.error("Error parsing cached billing first reading:", e);
+          }
+        }
       }
-    );
+    };
 
-    return () => unsubscribe();
+    fetchBillingFirst();
   }, [getCurrentBillingPeriod().start.getTime()]);
 
   // Filter readings to only include real device data (removing simulated data)
@@ -894,8 +1009,24 @@ export default function App() {
         setNotifications(data);
         isFirstLoad.current = false;
       },
-      (error) => {
+      (error: any) => {
         console.error("Firestore notifications sync error:", error);
+        const isQuota = error?.message?.includes("Quota") || error?.message?.includes("quota") || error?.code === "resource-exhausted";
+        if (isQuota) {
+          setIsFirestoreQuotaExceeded(true);
+          setFirestoreErrorMessage(error.message || "");
+        }
+        
+        // Restore from localStorage backup
+        const cached = localStorage.getItem("pzem_notifications");
+        if (cached) {
+          try {
+            const data = JSON.parse(cached);
+            setNotifications(data);
+          } catch (e) {
+            console.error("Error parsing cached notifications:", e);
+          }
+        }
       }
     );
 
@@ -1561,8 +1692,37 @@ export default function App() {
         <main className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-8 space-y-6">
         
         {/* Real-time Status Alert Banners */}
-        {(isOverpowerActive || (!isOnline && isOnlineOfflineAlertEnabled && !isOfflineBannerDismissed) || (browserNotificationPermission !== "granted" && !isNotificationPromptDismissed)) && (
+        {(isFirestoreQuotaExceeded || isOverpowerActive || (!isOnline && isOnlineOfflineAlertEnabled && !isOfflineBannerDismissed) || (browserNotificationPermission !== "granted" && !isNotificationPromptDismissed)) && (
           <div className="space-y-3">
+            {isFirestoreQuotaExceeded && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-amber-500/10 border border-amber-500/25 text-amber-600 dark:text-amber-400 rounded-3xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg shadow-amber-500/5"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="p-2.5 bg-amber-500/15 text-amber-500 rounded-2xl border border-amber-500/20 shrink-0 mt-0.5">
+                    <Database className="w-5 h-5 animate-pulse text-amber-500" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-amber-600 dark:text-amber-300">⚠️ โควตาดึงข้อมูลฐานข้อมูลรายวันเต็มขีดจำกัด (Database Quota Reached)</h4>
+                    <p className={`text-xs mt-1 leading-relaxed ${isDarkMode ? "text-zinc-400" : "text-zinc-600"}`}>
+                      เนื่องจากระบบใช้งานทรัพยากรบน Free Tier ถึงขีดจำกัดสูงสุด 50,000 อ่าน/วันแล้ว <span className="font-semibold text-amber-500 underline">ระบบได้สลับมาดึงข้อมูลสำรองล่าสุดจากอุปกรณ์ (Local Cache) และข้อมูลระบบจำลองอัตโนมัติ</span> ท่านยังสามารถทดสอบ ดูสถิติย้อนหลัง และตรวจสอบฟังก์ชันต่าง ๆ บนหน้าเว็บต่อได้ทันทีอย่างสมบูรณ์แบบ!
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                  <button
+                    onClick={() => setIsFirestoreQuotaExceeded(false)}
+                    className="p-1.5 rounded-full hover:bg-amber-500/15 transition-colors cursor-pointer text-amber-500"
+                    title="ซ่อนคำเตือน"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </motion.div>
+            )}
+
             {isOverpowerActive && (
               <motion.div
                 initial={{ opacity: 0, y: -10 }}
@@ -1795,6 +1955,17 @@ export default function App() {
           {/* Contextual Actions depending on selected tab */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
 
+
+            {/* Refresh history logs - Visible only on History tab */}
+            {activeTab === "history" && (
+              <button
+                onClick={() => setRefreshCounter(prev => prev + 1)}
+                className="flex items-center justify-center gap-1.5 px-4 py-2 border border-blue-950 bg-blue-950/20 text-blue-400 hover:bg-blue-950/40 hover:text-blue-300 rounded-xl text-xs font-bold transition-all cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                รีเฟรชข้อมูล (Refresh History)
+              </button>
+            )}
 
             {/* Clear database action - Visible only on History tab */}
             {activeTab === "history" && (
